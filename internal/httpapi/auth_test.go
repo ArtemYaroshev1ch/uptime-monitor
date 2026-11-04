@@ -43,6 +43,8 @@ type testAPI struct {
 	monitors  *memory.Monitors
 	checks    *memory.Checks
 	incidents *memory.Incidents
+	channels  *memory.Channels
+	sender    *recordingSender
 }
 
 func newTestAPI(t *testing.T, db fakeDB, log *slog.Logger) testAPI {
@@ -54,6 +56,8 @@ func newTestAPI(t *testing.T, db fakeDB, log *slog.Logger) testAPI {
 	monitors := memory.NewMonitors(clk.Now)
 	checks := memory.NewChecks(monitors)
 	incidents := memory.NewIncidents(monitors)
+	channels := memory.NewChannels(clk.Now)
+	sender := &recordingSender{}
 
 	router := NewRouter(Deps{
 		BuildInfo: observability.BuildInfo{
@@ -68,10 +72,11 @@ func newTestAPI(t *testing.T, db fakeDB, log *slog.Logger) testAPI {
 		Monitors:    service.NewMonitors(monitors, checker.NewTargetPolicy(false), clk, testMonitorLimit),
 		Checks:      service.NewChecks(monitors, checks, clk),
 		Incidents:   service.NewIncidents(incidents),
+		Channels:    service.NewChannels(channels, checker.NewTargetPolicy(false), sender, clk),
 		Tokens:      tokens,
 		AuthLimiter: middleware.NewRateLimiter(10, time.Minute, clk),
 	})
-	return testAPI{router: router, clock: clk, tokens: tokens, auth: authSvc, monitors: monitors, checks: checks, incidents: incidents}
+	return testAPI{router: router, clock: clk, tokens: tokens, auth: authSvc, monitors: monitors, checks: checks, incidents: incidents, channels: channels, sender: sender}
 }
 
 // userToken registers a user through the service (bypassing the auth rate

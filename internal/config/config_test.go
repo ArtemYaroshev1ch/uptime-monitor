@@ -66,6 +66,7 @@ func TestLoadAPI(t *testing.T) {
 				"ACCESS_TOKEN_TTL":      "1h",
 				"TRUST_PROXY_HEADERS":   "true",
 				"MAX_MONITORS_PER_USER": "5",
+				"TELEGRAM_BOT_TOKEN":    "123:abc",
 				"ALLOW_PRIVATE_TARGETS": "true",
 			},
 			want: API{
@@ -76,6 +77,7 @@ func TestLoadAPI(t *testing.T) {
 				},
 				DB:                  Database{URL: testDSN, MaxConns: 4},
 				Auth:                Auth{JWTSecret: testSecret, AccessTokenTTL: time.Hour},
+				Notify:              Notify{TelegramBotToken: "123:abc"},
 				TrustProxyHeaders:   true,
 				HTTPAddr:            "127.0.0.1:9000",
 				MaxMonitorsPerUser:  5,
@@ -271,9 +273,11 @@ func TestLoadWorker(t *testing.T) {
 		"WORKER_CONCURRENCY":    "5",
 		"SCHEDULER_BATCH_SIZE":  "10",
 		"CHECKS_RETENTION_DAYS": "7",
+		"TELEGRAM_BOT_TOKEN":    "123:abc",
 		"ALLOW_PRIVATE_TARGETS": "true",
 	})
 	require.NoError(t, err)
+	assert.Equal(t, "123:abc", custom.Notify.TelegramBotToken)
 	assert.Equal(t, "127.0.0.1:19091", custom.OpsAddr)
 	assert.Equal(t, 5, custom.Concurrency)
 	assert.Equal(t, 10, custom.BatchSize)

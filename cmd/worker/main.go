@@ -1,5 +1,5 @@
-// Command worker checks monitors on schedule, stores the results and cleans
-// up old ones.
+// Command worker checks monitors on schedule, stores the results, delivers
+// notifications, warns about expiring certificates and cleans up old checks.
 package main
 
 import (
@@ -17,8 +17,10 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/artemyaroshev1ch/uptime-monitor/internal/certwatch"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/checker"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/config"
+	"github.com/artemyaroshev1ch/uptime-monitor/internal/notifier"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/observability"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/platform/clock"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/platform/healthcheck"
@@ -54,6 +56,8 @@ const (
 	retentionInterval = time.Hour
 	// retentionBatch is the number of checks deleted per statement.
 	retentionBatch = 5000
+	// certwatchInterval is how often expiring certificates are looked for.
+	certwatchInterval = time.Hour
 )
 
 func main() {
@@ -139,10 +143,10 @@ func serve(ctx context.Context, cfg config.Worker, info observability.BuildInfo,
 		log.Warn("ALLOW_PRIVATE_TARGETS is on: checks may reach internal addresses; never use this in production")
 	}
 
-	// One connection per running check (to save its result) plus one for
-	// claiming and one for retention; a smaller pool would make checks queue
-	// for connections.
-	maxConns := max(cfg.DB.MaxConns, int32(cfg.Concurrency)+2) //nolint:gosec // Concurrency is validated and small
+	// One connection per running check (to save its result) plus one each
+	// for claiming, retention, the notifier and certwatch; a smaller pool
+	// would make checks queue for connections.
+	maxConns := max(cfg.DB.MaxConns, int32(cfg.Concurrency)+4) //nolint:gosec // Concurrency is validated and small
 	pool, err := postgres.NewPool(ctx, postgres.PoolConfig{URL: cfg.DB.URL, MaxConns: maxConns})
 	if err != nil {
 		return err
@@ -150,12 +154,13 @@ func serve(ctx context.Context, cfg config.Worker, info observability.BuildInfo,
 	// Runs after the group has finished: no loop uses the pool any more.
 	defer pool.Close()
 
+	userAgent := "uptime-monitor/" + info.Version + " (+https://github.com/artemyaroshev1ch/uptime-monitor)"
 	clk := clock.System{}
 	checks := repository.NewChecks(pool)
 	chk := checker.New(checker.Options{
 		AllowPrivate: cfg.AllowPrivateTargets,
 		Clock:        clk,
-		UserAgent:    "uptime-monitor/" + info.Version + " (+https://github.com/artemyaroshev1ch/uptime-monitor)",
+		UserAgent:    userAgent,
 	})
 	sched := scheduler.New(checks, chk, log, clk, scheduler.Config{
 		Concurrency:     cfg.Concurrency,
@@ -169,6 +174,17 @@ func serve(ctx context.Context, cfg config.Worker, info observability.BuildInfo,
 		Interval: retentionInterval,
 		Batch:    retentionBatch,
 	})
+	outbox := repository.NewNotifications(pool)
+	sender := notifier.NewDispatcher(notifier.DispatcherOptions{
+		TelegramToken: cfg.Notify.TelegramBotToken,
+		AllowPrivate:  cfg.AllowPrivateTargets,
+		UserAgent:     userAgent,
+	})
+	if cfg.Notify.TelegramBotToken == "" {
+		log.Warn("TELEGRAM_BOT_TOKEN is not set: notifications to telegram channels will fail")
+	}
+	delivery := notifier.New(outbox, sender, clk, log, notifier.DefaultConfig())
+	watcher := certwatch.New(outbox, clk, log, certwatchInterval)
 
 	opsHandler := ops.Handler(log,
 		ops.Check{Name: "database", Fn: pool.Ping},
@@ -187,6 +203,8 @@ func serve(ctx context.Context, cfg config.Worker, info observability.BuildInfo,
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return sched.Run(gctx) })
 	g.Go(func() error { return cleaner.Run(gctx) })
+	g.Go(func() error { return delivery.Run(gctx) })
+	g.Go(func() error { return watcher.Run(gctx) })
 	g.Go(func() error { return httpserver.New("ops", opsHandler, log, cfg.ShutdownTimeout).Serve(gctx, ln) })
 	if err := g.Wait(); err != nil {
 		return err

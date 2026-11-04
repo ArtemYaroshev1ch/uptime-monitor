@@ -23,6 +23,8 @@ tags:
     description: URLs checked on your behalf. You only ever see your own.
   - name: incidents
     description: Outages of your monitors, opened and resolved by the worker.
+  - name: channels
+    description: Where notifications about your monitors are delivered.
 
 paths:
   /healthz:
@@ -411,6 +413,218 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/Internal" }
 
+  /api/v1/channels:
+    post:
+      tags: [channels]
+      summary: Create a notification channel
+      description: |
+        `telegram` channels need `config.chat_id`; the server's bot
+        (TELEGRAM_BOT_TOKEN) must be allowed to write to that chat.
+        `webhook` channels need `config.url`, which passes the same address
+        checks as monitor URLs. For a webhook the server generates a signing
+        secret and returns it in `config.secret` of this response only:
+        store it, it is never shown again. Fails with 409 when you already
+        have 10 channels.
+      operationId: createChannel
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelInput" }
+            examples:
+              telegram:
+                value: { type: telegram, name: On-call chat, config: { chat_id: "-1001234567890" } }
+              webhook:
+                value: { type: webhook, name: Ops, config: { url: "https://hooks.example.com/uptime" } }
+      responses:
+        "201":
+          description: Created. For a webhook, `config.secret` holds the signing secret.
+          headers:
+            Location:
+              description: Path of the new channel.
+              schema: { type: string, example: /api/v1/channels/6f1d2b7a-3c4e-4f5a-8b9c-0d1e2f3a4b5c }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Channel" }
+              example:
+                id: 6f1d2b7a-3c4e-4f5a-8b9c-0d1e2f3a4b5c
+                type: webhook
+                name: Ops
+                config: { url: "https://hooks.example.com/uptime", secret: K7QJ2MZ4XW3N5PB6RT8VY2LDQA }
+                is_active: true
+                created_at: "2026-11-04T10:00:00Z"
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: You already have the maximum number of channels.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: { code: conflict, message: Limit reached } }
+        "500": { $ref: "#/components/responses/Internal" }
+    get:
+      tags: [channels]
+      summary: List your channels
+      description: Newest first. Webhook secrets are never included.
+      operationId: listChannels
+      security:
+        - bearerAuth: []
+      parameters:
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Offset" }
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Channel" }
+                  total:
+                    type: integer
+                    description: Number of all your channels, not just this page.
+                required: [items, total]
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/channels/{id}:
+    parameters:
+      - { $ref: "#/components/parameters/ChannelID" }
+    get:
+      tags: [channels]
+      summary: Get one of your channels
+      operationId: getChannel
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The channel, without the webhook secret.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Channel" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/ChannelNotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+    patch:
+      tags: [channels]
+      summary: Update or disable a channel
+      description: |
+        Only the fields present change; absent config fields keep their
+        values, and the webhook secret is kept. `type` cannot be changed.
+        Set `is_active: false` to stop notifications to the channel;
+        notifications already queued for it then fail.
+      operationId: updateChannel
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelInput" }
+            example: { is_active: false }
+      responses:
+        "200":
+          description: The updated channel.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Channel" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/ChannelNotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      tags: [channels]
+      summary: Delete a channel
+      description: Its queued notifications are deleted with it.
+      operationId: deleteChannel
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Deleted.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/ChannelNotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/channels/{id}/test:
+    parameters:
+      - { $ref: "#/components/parameters/ChannelID" }
+    post:
+      tags: [channels]
+      summary: Send a test notification
+      description: |
+        Delivers an `event: test` message right away (not through the
+        outbox, without retries) and reports the outcome. 200 means the
+        test was carried out; `delivered` says whether it worked. Disabled
+        channels can be tested too.
+      operationId: testChannel
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The outcome of the delivery.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TestResult" }
+              examples:
+                delivered:
+                  value: { delivered: true }
+                failed:
+                  value: { delivered: false, error: "telegram responded 400 Bad Request: Bad Request: chat not found" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/ChannelNotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+webhooks:
+  notification:
+    post:
+      summary: Notification delivered to a webhook channel
+      description: |
+        Sent by the worker for `incident_opened`, `incident_resolved` and
+        `cert_expiring`, and by the test endpoint for `test`. Any 2xx answer
+        is success; redirects are not followed. Server errors, 408, 429 and
+        network errors are retried with exponential backoff (30 s, 1 m,
+        2 m, 4 m), five attempts in all; any other 4xx stops delivery at
+        once. Delivery is at-least-once: drop repeats by `id`.
+
+        Verify `X-Signature` before trusting the body: compute HMAC-SHA256
+        of the raw body with the channel secret, hex-encode it, prefix
+        `sha256=` and compare in constant time.
+      parameters:
+        - name: X-Signature
+          in: header
+          required: true
+          description: '"sha256=" + hex(HMAC-SHA256(secret, raw body)).'
+          schema: { type: string, example: "sha256=5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843" }
+        - name: X-Uptime-Event
+          in: header
+          required: true
+          schema: { type: string, enum: [incident_opened, incident_resolved, cert_expiring, test] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WebhookPayload" }
+            example:
+              id: 1234
+              event: incident_opened
+              sent_at: "2026-11-04T10:03:05Z"
+              monitor: { id: 0b8f3c2e-5a1d-4c8e-9f0a-2d6b7e1c4a9f, name: Shop, url: "https://shop.example.com/" }
+              incident:
+                id: 9a8b7c6d-5e4f-4a3b-2c1d-0e9f8a7b6c5d
+                started_at: "2026-11-04T10:01:00Z"
+                resolved_at: null
+                cause_kind: timeout
+      responses:
+        "2XX":
+          description: Accepted.
+
 components:
   parameters:
     MonitorID:
@@ -419,6 +633,12 @@ components:
       required: true
       description: |
         Monitor ID. Unknown, malformed and other users' IDs all answer 404.
+      schema: { type: string, format: uuid }
+    ChannelID:
+      name: id
+      in: path
+      required: true
+      description: Channel ID. Unknown, malformed and other users' IDs all answer 404.
       schema: { type: string, format: uuid }
     Limit:
       name: limit
@@ -625,6 +845,94 @@ components:
           description: resolved_at - started_at; null while open.
       required: [id, monitor_id, monitor_name, started_at, resolved_at, cause_kind, duration_seconds]
 
+    ChannelInput:
+      type: object
+      description: On create `type`, `name` and `config` are required.
+      additionalProperties: false
+      properties:
+        type: { type: string, enum: [telegram, webhook], description: Create only. }
+        name: { type: string, minLength: 1, maxLength: 100 }
+        config:
+          type: object
+          additionalProperties: false
+          properties:
+            chat_id:
+              type: string
+              maxLength: 100
+              description: Telegram only. A chat ID (e.g. "-1001234567890") or "@channelusername".
+            url:
+              type: string
+              format: uri
+              description: Webhook only. http or https; no credentials, no internal addresses.
+        is_active: { type: boolean, default: true }
+
+    Channel:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, enum: [telegram, webhook] }
+        name: { type: string }
+        config:
+          type: object
+          properties:
+            chat_id: { type: string, description: Telegram only. }
+            url: { type: string, description: Webhook only. }
+            secret:
+              type: string
+              description: Webhook only, and only in the response to create.
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+      required: [id, type, name, config, is_active, created_at]
+
+    TestResult:
+      type: object
+      properties:
+        delivered: { type: boolean }
+        error:
+          type: string
+          description: Why the delivery failed; absent when delivered.
+      required: [delivered]
+
+    WebhookPayload:
+      type: object
+      properties:
+        id:
+          type: integer
+          description: Notification ID, the same on every retry. Absent for test.
+        event: { type: string, enum: [incident_opened, incident_resolved, cert_expiring, test] }
+        sent_at: { type: string, format: date-time }
+        monitor:
+          type: object
+          description: Absent for test.
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            url: { type: string }
+          required: [id, name, url]
+        incident:
+          type: object
+          description: Incident events only.
+          properties:
+            id: { type: string, format: uuid }
+            started_at: { type: string, format: date-time }
+            resolved_at: { type: [string, "null"], format: date-time }
+            cause_kind: { type: string }
+            duration_seconds: { type: integer, description: incident_resolved only. }
+          required: [id, started_at, resolved_at]
+        certificate:
+          type: object
+          description: cert_expiring only.
+          properties:
+            not_after: { type: string, format: date-time }
+          required: [not_after]
+        channel:
+          type: object
+          description: test only.
+          properties:
+            name: { type: string }
+          required: [name]
+      required: [event, sent_at]
+
     Error:
       type: object
       properties:
@@ -674,6 +982,12 @@ components:
           example: { error: { code: unauthorized, message: Authentication required } }
     NotFound:
       description: No such monitor of yours.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: not_found, message: Resource not found } }
+    ChannelNotFound:
+      description: No such channel of yours.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

@@ -70,8 +70,10 @@ func (r *Checks) ClaimDue(ctx context.Context, limit int) ([]domain.CheckTarget,
 }
 
 // SaveResult stores a check result, applies it to the monitor's health
-// (domain.Evaluate) and opens or resolves an incident, all in one
-// transaction: the check, the monitor state and the incident never disagree.
+// (domain.Evaluate), opens or resolves an incident and queues its
+// notifications (one per active channel of the owner), all in one
+// transaction: the check, the monitor state, the incident and the outbox
+// never disagree.
 // A monitor deleted while it was being checked returns domain.ErrNotFound.
 //
 // The monitor row is locked first (FOR UPDATE). Two results of the same
@@ -130,11 +132,17 @@ func (r *Checks) SaveResult(ctx context.Context, monitorID uuid.UUID, res domain
 
 		switch {
 		case tr.OpenIncident:
-			change.Opened, err = openIncident(ctx, tx, monitorID, res)
+			if change.Opened, err = openIncident(ctx, tx, monitorID, res); err != nil || change.Opened == nil {
+				return err
+			}
+			return enqueueIncident(ctx, tx, monitorID, change.Opened.ID, domain.EventIncidentOpened)
 		case tr.ResolveIncident:
-			change.Resolved, err = resolveIncident(ctx, tx, monitorID, res.CheckedAt)
+			if change.Resolved, err = resolveIncident(ctx, tx, monitorID, res.CheckedAt); err != nil || change.Resolved == nil {
+				return err
+			}
+			return enqueueIncident(ctx, tx, monitorID, change.Resolved.ID, domain.EventIncidentResolved)
 		}
-		return err
+		return nil
 	})
 	if err != nil {
 		return domain.IncidentChange{}, fmt.Errorf("save check result: %w", err)

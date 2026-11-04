@@ -50,11 +50,21 @@ type Auth struct {
 	AccessTokenTTL time.Duration `env:"ACCESS_TOKEN_TTL"                envDefault:"12h"`
 }
 
+// Notify holds notification delivery settings, shared by the API (test
+// notifications) and the worker (the outbox).
+type Notify struct {
+	// TelegramBotToken is the Bot API token. Empty disables Telegram:
+	// telegram channels can still be created, but every delivery to them
+	// fails. Anyone who knows it controls the bot, so it is never logged.
+	TelegramBotToken string `env:"TELEGRAM_BOT_TOKEN"`
+}
+
 // API is the configuration of cmd/api.
 type API struct {
 	Common
-	DB   Database
-	Auth Auth
+	DB     Database
+	Auth   Auth
+	Notify Notify
 
 	HTTPAddr string `env:"HTTP_ADDR" envDefault:":8080"`
 	// TrustProxyHeaders makes the API take the client IP (for rate limiting)
@@ -98,7 +108,8 @@ func loadAPI(environ map[string]string) (API, error) {
 // Worker is the configuration of cmd/worker.
 type Worker struct {
 	Common
-	DB Database
+	DB     Database
+	Notify Notify
 
 	// OpsAddr serves /healthz and /readyz (and /metrics from Phase 7). It
 	// must not be published outside the host network.
