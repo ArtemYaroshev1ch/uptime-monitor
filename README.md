@@ -8,9 +8,10 @@ Self-hosted uptime monitoring for websites with HTTP/HTTPS diagnostics,
 incidents and notifications, built to be operated: metrics, health probes,
 structured logs and graceful shutdown.
 
-> **Status: early development (Phase 5, incidents).** Users, monitors, scheduled
-> HTTP/HTTPS checks with phase timings, history, statistics and incidents
-> work. Notifications and metrics come next. Items marked *planned* are
+> **Status: early development (Phase 6, notifications).** Users, monitors,
+> scheduled HTTP/HTTPS checks with phase timings, history, statistics,
+> incidents, Telegram and webhook notifications and certificate expiry
+> warnings work. Metrics come next. Items marked *planned* are
 > not implemented yet; see [Roadmap](#roadmap).
 
 ## Features
@@ -34,6 +35,11 @@ structured logs and graceful shutdown.
   successful check resolves it. Never more than one open incident per
   monitor, even with concurrent results. The start time is the first failure
   of the streak, so the duration is the real downtime.
+- Notifications to Telegram and signed webhooks (HMAC-SHA256) when an
+  incident opens or resolves and when a TLS certificate is about to expire
+  (`cert_expiry_warn_days`, once per certificate). Delivered through a
+  transactional outbox with retries and exponential backoff; a test endpoint
+  checks a channel on demand.
 - One error format for every endpoint, with per-field details for invalid
   input. Every response carries an `X-Request-ID` that also appears in logs.
 - Liveness `GET /healthz`, readiness `GET /readyz` (checks PostgreSQL) and
@@ -42,8 +48,7 @@ structured logs and graceful shutdown.
 - JSON logs in production, text logs in development.
 - Graceful shutdown on `SIGTERM`/Ctrl+C.
 - `-healthcheck` flag for container health checks without curl.
-- *Planned:* Telegram and webhook notifications, TLS certificate expiry
-  warnings, Prometheus metrics.
+- *Planned:* Prometheus metrics.
 
 ## Quick start
 
@@ -97,6 +102,11 @@ curl "http://localhost:8080/api/v1/monitors/<id>/stats?period=7d" -H "Authorizat
 curl "http://localhost:8080/api/v1/incidents?open=true" -H "Authorization: Bearer $TOKEN"
 # {"items":[{"id":"...","monitor_id":"...","monitor_name":"Example",
 #   "started_at":"...","resolved_at":null,"cause_kind":"timeout","duration_seconds":null}],"total":1}
+# Notifications: a webhook channel (the secret is shown only now), then a test.
+curl -X POST http://localhost:8080/api/v1/channels -H "Authorization: Bearer $TOKEN" \n  -d '{"type":"webhook","name":"ops","config":{"url":"https://hooks.example.com/uptime"}}'
+# {"id":"...","type":"webhook","name":"ops","config":{"url":"...","secret":"K7QJ..."},...}
+curl -X POST http://localhost:8080/api/v1/channels/<id>/test -H "Authorization: Bearer $TOKEN"
+# {"delivered":true}
 curl -X DELETE http://localhost:8080/api/v1/monitors/<id> -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -135,11 +145,13 @@ All configuration comes from environment variables. `make run-api` and
 | `WORKER_CONCURRENCY`    | checks running at once in one worker                    | `20`    |
 | `SCHEDULER_BATCH_SIZE`  | monitors claimed per scheduler tick (1 s)               | `50`    |
 | `CHECKS_RETENTION_DAYS` | days check results are kept                             | `30`    |
+| `TELEGRAM_BOT_TOKEN`    | Telegram bot token (secret); empty disables Telegram    | empty   |
 
 `api` uses the variables up to `ALLOW_PRIVATE_TARGETS` (except `OPS_ADDR`
-and the worker settings); `worker` uses the common ones (`APP_ENV`,
-`LOG_LEVEL`, `DATABASE_URL`, `DB_MAX_CONNS`, `SHUTDOWN_TIMEOUT`),
-`ALLOW_PRIVATE_TARGETS` and the worker settings.
+and the worker settings) and `TELEGRAM_BOT_TOKEN` (for test notifications);
+`worker` uses the common ones (`APP_ENV`, `LOG_LEVEL`, `DATABASE_URL`,
+`DB_MAX_CONNS`, `SHUTDOWN_TIMEOUT`), `ALLOW_PRIVATE_TARGETS`, the worker
+settings and `TELEGRAM_BOT_TOKEN`.
 
 Invalid values stop the process at startup with an error that lists every
 problem.
@@ -167,6 +179,20 @@ problem.
   requests are logged at debug level. The worker logs `incident opened`
   (warn) and `incident resolved` (info) with `monitor_id`, `incident_id`,
   `cause_kind` and `duration_seconds`; every check at debug level.
+  Each delivery is logged as `notification sent` (info), `notification will
+  be retried` or `notification failed` (warn) with `notification_id`,
+  `event`, `channel_type`, `attempt`, `monitor_id` and `incident_id`;
+  `certificate warnings queued` (info) when certwatch finds expiring
+  certificates.
+- **Notifications:** an incident change and its notifications (one per
+  active channel of the owner) are written in one transaction to the
+  `notifications` outbox. Every worker delivers due rows (`SKIP LOCKED`, a
+  1-minute lease), at least once: a worker that dies mid-delivery leaves the
+  row to be retried after the lease. Failures are retried after 30 s, 1 m,
+  2 m and 4 m; after 5 attempts, or at once for a permanent error (most
+  4xx, blocked address, disabled channel, Telegram not configured), the row
+  becomes `failed` with `last_error`. To see stuck or failed deliveries:
+  `SELECT status, count(*), min(created_at) FROM notifications GROUP BY 1;`
 - **Shutdown:** on `SIGTERM` the API stops accepting connections and waits up
   to `SHUTDOWN_TIMEOUT` for in-flight requests. The worker stops claiming
   monitors and waits up to `SHUTDOWN_TIMEOUT` for running checks to finish
@@ -218,8 +244,13 @@ after a rollback (expand/contract):
   instance. Behind a reverse proxy set `TRUST_PROXY_HEADERS=true`, otherwise
   all clients share the proxy's address.
 - Request bodies are limited to 1 MiB; unknown JSON fields are rejected.
-- Data isolation: every monitor query filters by the owner. Another user's
-  monitor answers 404, exactly like a missing one.
+- Data isolation: every monitor and channel query filters by the owner.
+  Another user's monitor or channel answers 404, exactly like a missing one.
+- Notification secrets: the webhook secret is generated by the server
+  (128 random bits) and returned only in the response that creates the
+  channel; the Telegram bot token is removed from every error before it is
+  logged or stored. Messages contain the monitor name, URL and incident
+  data, never channel configuration.
 
 ### SSRF
 
@@ -238,6 +269,9 @@ could make it request `http://169.254.169.254/` (cloud credentials),
   including each redirect hop, and refuses blocked addresses
   (`error_kind = blocked_target`). Redirect targets also pass the URL rules.
   The checker never uses `HTTP_PROXY`.
+- **Webhook URLs** get the same treatment: the URL rules when the channel is
+  saved and the connect-time address check on every delivery. Redirects are
+  not followed, so a receiver cannot bounce a signed delivery elsewhere.
 - `ALLOW_PRIVATE_TARGETS=true` disables the address rules (not the scheme and
   credential rules) so you can monitor local services during development.
   **Never enable it in production.** The API logs a warning at startup when it
@@ -298,7 +332,7 @@ Deployment, monitoring stack, SLOs, alerts and runbooks live in the
 - [x] Phase 3: monitors CRUD
 - [x] Phase 4: checks, scheduler, statistics
 - [x] Phase 5: incidents
-- [ ] Phase 6: notifications and certificate warnings
+- [x] Phase 6: notifications and certificate warnings
 - [ ] Phase 7: observability
 - [ ] Phase 8: Docker
 - [ ] Phase 9: CI/CD
