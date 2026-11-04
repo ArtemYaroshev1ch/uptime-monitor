@@ -32,7 +32,8 @@ type IncidentFilter struct {
 }
 
 // IncidentChange reports what saving a check result did to incidents. At
-// most one of the fields is set. Phase 6 turns them into notifications.
+// most one of the fields is set. Its notifications are queued in the same
+// transaction.
 type IncidentChange struct {
 	Opened   *Incident
 	Resolved *Incident

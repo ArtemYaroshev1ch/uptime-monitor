@@ -96,3 +96,12 @@ type Notification struct {
 	Channel   Channel
 	Message   Message
 }
+
+// CertWarnings is what one certwatch run did.
+type CertWarnings struct {
+	// Monitors is the number of monitors warned about.
+	Monitors int
+	// Notifications is the number of outbox rows created: one per active
+	// channel of each monitor's owner.
+	Notifications int
+}
