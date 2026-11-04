@@ -19,6 +19,7 @@ import (
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/config"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/httpapi"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/httpapi/middleware"
+	"github.com/artemyaroshev1ch/uptime-monitor/internal/notifier"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/observability"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/platform/clock"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/platform/healthcheck"
@@ -147,6 +148,12 @@ func serve(ctx context.Context, cfg config.API, info observability.BuildInfo, st
 	monitorSvc := svc.NewMonitors(monitorRepo, checker.NewTargetPolicy(cfg.AllowPrivateTargets), clk, cfg.MaxMonitorsPerUser)
 	checkSvc := svc.NewChecks(monitorRepo, repository.NewChecks(pool), clk)
 	incidentSvc := svc.NewIncidents(repository.NewIncidents(pool))
+	sender := notifier.NewDispatcher(notifier.DispatcherOptions{
+		TelegramToken: cfg.Notify.TelegramBotToken,
+		AllowPrivate:  cfg.AllowPrivateTargets,
+		UserAgent:     "uptime-monitor/" + info.Version + " (+https://github.com/artemyaroshev1ch/uptime-monitor)",
+	})
+	channelSvc := svc.NewChannels(repository.NewChannels(pool), checker.NewTargetPolicy(cfg.AllowPrivateTargets), sender, clk)
 
 	router := httpapi.NewRouter(httpapi.Deps{
 		BuildInfo:         info,
@@ -157,6 +164,7 @@ func serve(ctx context.Context, cfg config.API, info observability.BuildInfo, st
 		Monitors:          monitorSvc,
 		Checks:            checkSvc,
 		Incidents:         incidentSvc,
+		Channels:          channelSvc,
 		Tokens:            tokens,
 		AuthLimiter:       middleware.NewRateLimiter(authRateLimit, time.Minute, clk),
 		TrustProxyHeaders: cfg.TrustProxyHeaders,
