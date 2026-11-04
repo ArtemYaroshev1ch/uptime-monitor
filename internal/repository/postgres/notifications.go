@@ -151,7 +151,6 @@ func (r *Notifications) mark(ctx context.Context, op, sql string, args ...any) e
 	return nil
 }
 
-
 // EnqueueCertExpiring finds active monitors whose certificate expires
 // within their cert_expiry_warn_days of now and that have not been warned
 // about this very certificate, and in one statement (hence one

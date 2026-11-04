@@ -275,7 +275,7 @@ func TestCertWarningsAreDeduplicated(t *testing.T) {
 		_, err := env.pool.Exec(ctx, `UPDATE monitors SET tls_not_after = $2 WHERE id = $1`, m.ID, notAfter)
 		require.NoError(t, err)
 	}
-	soon := now.Add(5 * 24 * time.Hour)  // within the default 14 days
+	soon := now.Add(5 * 24 * time.Hour)   // within the default 14 days
 	later := now.Add(60 * 24 * time.Hour) // outside
 	expiring := env.monitor(t, "expiring", true, now)
 	setCert(expiring, &soon)
