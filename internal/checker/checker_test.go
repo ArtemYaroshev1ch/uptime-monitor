@@ -274,6 +274,21 @@ func TestCheckBlocksPrivateTargets(t *testing.T) {
 	assert.Zero(t, hits.Load(), "no request reached the internal server")
 }
 
+func TestSafeDialer(t *testing.T) {
+	t.Parallel()
+	srv := newServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	addr := srv.Listener.Addr().String()
+
+	_, err := NewSafeDialer(false).DialContext(t.Context(), "tcp", addr)
+	require.Error(t, err)
+	assert.True(t, IsBlockedConnection(err), err)
+
+	conn, err := NewSafeDialer(true).DialContext(t.Context(), "tcp", addr)
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+	assert.False(t, IsBlockedConnection(errors.New("connection refused")))
+}
+
 func TestRedirectPolicyBlocksPrivateTargets(t *testing.T) {
 	t.Parallel()
 	policy := New(Options{}).redirectPolicy(true)

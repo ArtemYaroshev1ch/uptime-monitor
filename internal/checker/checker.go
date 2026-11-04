@@ -84,15 +84,7 @@ func New(opts Options) *Checker {
 	if c.clock == nil {
 		c.clock = clock.System{}
 	}
-	c.dialer = &net.Dialer{
-		// Control runs after the address is known and before connecting:
-		// the one place where every connection, including those made for
-		// redirects, passes through with its final IP. Checking here
-		// defeats DNS rebinding (a name that resolved to a public address
-		// at validation time and to 127.0.0.1 now).
-		Control:   c.control,
-		KeepAlive: -1,
-	}
+	c.dialer = NewSafeDialer(opts.AllowPrivate)
 
 	var tlsConfig *tls.Config
 	if opts.TLSConfig != nil {
@@ -114,17 +106,34 @@ func New(opts Options) *Checker {
 	return c
 }
 
-// control is net.Dialer.Control: it rejects blocked addresses.
-func (c *Checker) control(_, address string, _ syscall.RawConn) error {
-	if c.policy.allowPrivate {
-		return nil
+// NewSafeDialer returns a dialer that refuses to connect to non-public
+// addresses (see IsBlockedIP) unless allowPrivate is set. Everything that
+// connects to a user-supplied URL uses it: the checker and webhook delivery.
+func NewSafeDialer(allowPrivate bool) *net.Dialer {
+	d := &net.Dialer{KeepAlive: -1}
+	if !allowPrivate {
+		// Control runs after the address is known and before connecting:
+		// the one place where every connection, including those made for
+		// redirects, passes through with its final IP. Checking here
+		// defeats DNS rebinding (a name that resolved to a public address
+		// at validation time and to 127.0.0.1 now).
+		d.Control = blockNonPublic
 	}
+	return d
+}
+
+// blockNonPublic is net.Dialer.Control: it rejects blocked addresses.
+func blockNonPublic(_, address string, _ syscall.RawConn) error {
 	ap, err := netip.ParseAddrPort(address)
 	if err != nil || IsBlockedIP(ap.Addr()) {
 		return blockedError{addr: address}
 	}
 	return nil
 }
+
+// IsBlockedConnection reports whether err comes from NewSafeDialer refusing
+// a non-public address.
+func IsBlockedConnection(err error) bool { return isBlocked(err) }
 
 // dial resolves the host itself (to time DNS with the injected resolver)
 // and connects to the resolved addresses in turn.
