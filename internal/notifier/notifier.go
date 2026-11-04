@@ -23,6 +23,28 @@ type Sender interface {
 // Dispatcher picks the sender of a channel's type.
 type Dispatcher map[domain.ChannelType]Sender
 
+// DispatcherOptions configures NewDispatcher.
+type DispatcherOptions struct {
+	// TelegramToken is TELEGRAM_BOT_TOKEN; empty leaves Telegram out.
+	TelegramToken string
+	// AllowPrivate (ALLOW_PRIVATE_TARGETS) lets webhooks reach internal
+	// addresses.
+	AllowPrivate bool
+	// UserAgent is sent with webhook deliveries.
+	UserAgent string
+}
+
+// NewDispatcher returns the senders of every configured channel type.
+func NewDispatcher(opts DispatcherOptions) Dispatcher {
+	d := Dispatcher{
+		domain.ChannelWebhook: NewWebhook(WebhookOptions{AllowPrivate: opts.AllowPrivate, UserAgent: opts.UserAgent}),
+	}
+	if opts.TelegramToken != "" {
+		d[domain.ChannelTelegram] = NewTelegram(TelegramOptions{Token: opts.TelegramToken})
+	}
+	return d
+}
+
 // Send delivers msg through the sender of ch.Type. A type without a sender
 // (Telegram without TELEGRAM_BOT_TOKEN) is a permanent failure.
 func (d Dispatcher) Send(ctx context.Context, ch domain.Channel, msg domain.Message) error {

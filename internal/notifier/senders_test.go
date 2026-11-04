@@ -255,6 +255,16 @@ func TestWebhookBlocksPrivateTargets(t *testing.T) {
 	assert.Empty(t, rc.reqs, "no request reached the internal server")
 }
 
+func TestNewDispatcher(t *testing.T) {
+	t.Parallel()
+	d := NewDispatcher(DispatcherOptions{})
+	assert.Contains(t, d, domain.ChannelWebhook)
+	assert.NotContains(t, d, domain.ChannelTelegram, "no token, no Telegram")
+
+	d = NewDispatcher(DispatcherOptions{TelegramToken: testToken})
+	assert.Contains(t, d, domain.ChannelTelegram)
+}
+
 func TestDispatcher(t *testing.T) {
 	t.Parallel()
 	rc := &recorder{status: http.StatusOK}
