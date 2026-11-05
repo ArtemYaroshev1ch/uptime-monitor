@@ -1,0 +1,62 @@
+# Dependabot opens PRs for outdated dependencies; CI checks each one like
+# any other PR. Weekly and grouped, so updates arrive as a few PRs a week
+# rather than one per library. Security updates are not limited by this
+# schedule: GitHub opens them as soon as an advisory is published.
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: build
+      include: scope
+    groups:
+      go-minor-and-patch:
+        update-types: [minor, patch]
+
+  # Actions are pinned by SHA; Dependabot bumps the SHA and the version
+  # comment next to it together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Base images of the Dockerfile (tag and digest are updated together).
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: build
+      include: scope
+    ignore:
+      # The Go version is set by the toolchain directive in go.mod and the
+      # golang image together; a new minor Go is a deliberate upgrade.
+      - dependency-name: golang
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
+  # PostgreSQL of the local stack. Patch and minor only: a new major version
+  # needs a dump and restore, and pgtest.Image (integration tests) and
+  # uptime-infra must move with it.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: build
+      include: scope
+    ignore:
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]

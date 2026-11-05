@@ -4,6 +4,7 @@
 # Test and profiling artifacts.
 /coverage.out
 /coverage.html
+/coverage-integration.out
 *.test
 *.prof
 

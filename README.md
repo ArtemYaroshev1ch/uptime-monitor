@@ -2,17 +2,19 @@
 
 [![CI](https://github.com/artemyaroshev1ch/uptime-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/artemyaroshev1ch/uptime-monitor/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/github/go-mod/go-version/artemyaroshev1ch/uptime-monitor)](go.mod)
+[![Release](https://img.shields.io/github/v/release/artemyaroshev1ch/uptime-monitor?include_prereleases&sort=semver)](https://github.com/artemyaroshev1ch/uptime-monitor/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Self-hosted uptime monitoring for websites with HTTP/HTTPS diagnostics,
 incidents and notifications, built to be operated: metrics, health probes,
 structured logs and graceful shutdown.
 
-> **Status: early development (Phase 6, notifications).** Users, monitors,
-> scheduled HTTP/HTTPS checks with phase timings, history, statistics,
-> incidents, Telegram and webhook notifications and certificate expiry
-> warnings work. Metrics come next. Items marked *planned* are
-> not implemented yet; see [Roadmap](#roadmap).
+> **Status: pre-1.0 (Phase 9, CI/CD).** Users, monitors, scheduled
+> HTTP/HTTPS checks with phase timings, history, statistics, incidents,
+> Telegram and webhook notifications, certificate expiry warnings,
+> Prometheus metrics, the Docker image and the release pipeline work. Final
+> documentation and v1.0.0 come next. Items marked *planned* are not
+> implemented yet; see [Roadmap](#roadmap).
 
 ## Features
 
@@ -330,7 +332,17 @@ make fmt    # gofmt + goimports
 make cover  # coverage report in coverage.html
 make up smoke      # whole stack in Docker, then the smoke test
 make docker-build  # only the image, tagged uptime-monitor:<version>
+make cover-check   # coverage floor of internal/service and internal/checker
+make vuln          # govulncheck
+make lint-ci lint-docker  # actionlint (workflows), hadolint (Dockerfile)
+make docker-build scan    # trivy on the image (HIGH/CRITICAL)
+make changelog     # release notes since the last tag
 ```
+
+CI runs the same targets on every pull request; a tag `vX.Y.Z` publishes
+the image `ghcr.io/artemyaroshev1ch/uptime-monitor:X.Y.Z` for amd64 and
+arm64 and a GitHub Release. Pipelines, the release procedure and branch
+protection are described in [docs/ci-cd.md](docs/ci-cd.md).
 
 ```
 cmd/api|worker|migrate/   one binary per command (local runs)
@@ -345,8 +357,9 @@ internal/platform/        logger, HTTP servers, health checks, PostgreSQL
 migrations/               SQL migrations (embedded)
 Dockerfile                multi-stage build, distroless runtime
 docker-compose.yml        local stack: postgres, migrate, api, worker
-scripts/smoke.sh          end-to-end check of a running stack
-docs/                     decisions, metrics catalog
+scripts/                  smoke test, coverage floor, changelog
+.github/                  CI and release workflows, Dependabot, PR template
+docs/                     decisions, metrics catalog, CI/CD
 ```
 
 ### Windows
@@ -389,7 +402,7 @@ Deployment, monitoring stack, SLOs, alerts and runbooks live in the
 - [x] Phase 6: notifications and certificate warnings
 - [x] Phase 7: observability
 - [x] Phase 8: Docker
-- [ ] Phase 9: CI/CD
+- [x] Phase 9: CI/CD
 - [ ] Phase 10: documentation and v1.0.0
 
 ## License
