@@ -1,13 +1,22 @@
 openapi: 3.1.0
 info:
   title: Uptime Monitor API
-  version: 0.0.0-dev
+  version: 1.0.0
   description: |
-    Public REST API of Uptime Monitor. Maintained by hand; it describes only
-    the endpoints implemented so far.
+    Public REST API of Uptime Monitor (port 8080). Maintained by hand and
+    kept honest by contract tests (internal/httpapi/openapi_test.go): every
+    route is documented, and every response of the HTTP tests must match
+    the status codes and schemas below.
 
     Every response carries `X-Request-ID`. Quote it when reporting a problem:
     the same ID is in the server logs.
+
+    Errors share one format (`Error`); internal details never reach the
+    client. Lists are paginated with `limit` (1–200, default 50) and
+    `offset` and answer `{"items": [...], "total": N}`.
+
+    Metrics and the profiler are on a separate ops port (9090), which is not
+    part of this API and is never exposed publicly.
   license:
     name: MIT
     identifier: MIT
