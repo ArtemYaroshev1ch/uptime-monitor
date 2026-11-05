@@ -55,7 +55,7 @@ GOLANGCI_LINT := $(TOOLS_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION)$(GOEXE)
 # and a CI run are the same command. Go tools run with `go run pkg@version`
 # (cached by Go, nothing added to go.mod); hadolint and trivy run as pinned
 # Docker images, so they need nothing installed besides Docker.
-GOVULNCHECK_VERSION := v1.1.4
+GOVULNCHECK_VERSION := v1.9.0
 ACTIONLINT_VERSION  := v1.7.12
 HADOLINT_IMAGE      := hadolint/hadolint:v2.15.1
 TRIVY_IMAGE         := aquasec/trivy:0.76.2
