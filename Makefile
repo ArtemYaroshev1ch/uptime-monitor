@@ -27,8 +27,9 @@ GOEXE := $(shell $(GO) env GOEXE)
 BIN_DIR   := bin
 TOOLS_DIR := $(BIN_DIR)/tools
 
-# Binaries under cmd/.
-CMDS := api worker migrate
+# Binaries under cmd/: one per command for local runs, plus the all-in-one
+# binary of the Docker image (see internal/app).
+CMDS := api worker migrate uptime-monitor
 
 # Build metadata injected into package main of every binary via -ldflags.
 # Release tags are vX.Y.Z; the version itself is SemVer without the "v".

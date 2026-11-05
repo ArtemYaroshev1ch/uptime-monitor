@@ -1,6 +1,6 @@
 //go:build integration
 
-package main
+package migrate
 
 import (
 	"bufio"
@@ -29,7 +29,7 @@ func migrate(t *testing.T, command string) []logRecord {
 	t.Helper()
 	var out strings.Builder
 
-	err := run(t.Context(), []string{command}, testInfo, &out)
+	err := Run(t.Context(), []string{command}, testInfo, &out)
 	require.NoError(t, err, "migrate %s", command)
 
 	var records []logRecord

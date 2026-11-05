@@ -1,4 +1,4 @@
-package main
+package migrate
 
 import (
 	"io"
@@ -22,7 +22,7 @@ func TestRunVersion(t *testing.T) {
 	t.Parallel()
 	var out strings.Builder
 
-	err := run(t.Context(), []string{"-version"}, testInfo, &out)
+	err := Run(t.Context(), []string{"-version"}, testInfo, &out)
 
 	require.NoError(t, err)
 	assert.Equal(t, "migrate 1.2.3 (commit abc123, built 2026-01-02T03:04:05Z, go1.27.0)\n", out.String())
@@ -48,7 +48,7 @@ func TestRunBadArguments(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := run(t.Context(), tt.args, testInfo, io.Discard)
+			err := Run(t.Context(), tt.args, testInfo, io.Discard)
 
 			require.ErrorContains(t, err, tt.wantErr)
 		})
@@ -58,7 +58,7 @@ func TestRunBadArguments(t *testing.T) {
 func TestRunRequiresDatabaseURL(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
 
-	err := run(t.Context(), []string{"up"}, testInfo, io.Discard)
+	err := Run(t.Context(), []string{"up"}, testInfo, io.Discard)
 
 	require.ErrorContains(t, err, "DATABASE_URL")
 }
