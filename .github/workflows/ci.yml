@@ -1,9 +1,15 @@
 name: CI
 
+# Every job calls a make target, so a CI failure can be reproduced locally
+# with the same command (docs/ci-cd.md).
+
 on:
   push:
     branches: [main]
   pull_request:
+  # The release workflow runs the whole CI first and publishes only if it
+  # passes (decision 045).
+  workflow_call:
 
 permissions:
   contents: read
@@ -13,48 +19,168 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Actions are pinned to a full commit SHA, not a tag: a tag can be moved to
+# malicious code, a SHA cannot. The comment says which release it is;
+# Dependabot updates both (decision 042).
+
 jobs:
   build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
+          # Reads the toolchain directive: the same Go as the image build.
           go-version-file: go.mod
       - run: make build
 
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@v9
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           # Keep in sync with GOLANGCI_LINT_VERSION in the Makefile.
           version: v2.15.0
+      - name: Lint workflows (actionlint)
+        run: make lint-ci
+      - name: Lint Dockerfile (hadolint)
+        run: make lint-docker
+
+  vuln:
+    name: Vulnerabilities (govulncheck)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # Reports only vulnerabilities in code the module actually calls,
+      # including the Go standard library of the toolchain in go.mod.
+      - run: make vuln
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       # Linux runners have a C compiler, so this runs with -race.
-      - run: make test
+      - name: Unit tests with coverage
+        run: make cover
+      - name: Coverage floor (service, checker >= 70%)
+        run: make cover-check
+      - name: Coverage summary
+        run: |
+          {
+            echo '### Unit test coverage'
+            echo '```'
+            go tool cover -func=coverage.out | tail -n 1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-unit
+          path: |
+            coverage.out
+            coverage.html
+          retention-days: 14
 
   integration:
     name: Integration tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       # testcontainers starts PostgreSQL in the runner's Docker daemon.
       - run: make test-integration
+      - name: Coverage summary
+        run: |
+          {
+            echo '### Unit + integration test coverage'
+            echo '```'
+            go tool cover -func=coverage-integration.out | tail -n 1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-integration
+          path: coverage-integration.out
+          retention-days: 14
+
+  image:
+    name: Image (build, scan, e2e)
+    runs-on: ubuntu-24.04
+    env:
+      # The tag the image is loaded under; docker-compose.yml uses
+      # uptime-monitor:${VERSION}, so compose runs this very image.
+      VERSION: ci
+      IMAGE: uptime-monitor:ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Both release platforms: catches an arm64-only build failure before a
+      # release does. Cheap: the Dockerfile cross-compiles, no emulation.
+      - name: Build for linux/amd64 and linux/arm64
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          # Same build args as the next step, so it reuses every layer.
+          build-args: |
+            VERSION=0.0.0-ci
+            COMMIT=${{ github.sha }}
+          # Only checks that both platforms build; nothing is pushed.
+          outputs: type=cacheonly
+          # The GitHub Actions cache keeps the layers (including go mod
+          # download) between runs; release.yml reads it too.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The runner's architecture only: a multi-platform image cannot be
+      # loaded into the local Docker daemon. Served from the build cache.
+      - name: Load the linux/amd64 image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.IMAGE }}
+          build-args: |
+            VERSION=0.0.0-ci
+            COMMIT=${{ github.sha }}
+
+      - name: Image size (< 30 MB)
+        run: |
+          size=$(docker image inspect --format '{{.Size}}' "$IMAGE")
+          echo "image size: $((size / 1024 / 1024)) MB ($size bytes)"
+          echo "Image size: $((size / 1024 / 1024)) MB" >> "$GITHUB_STEP_SUMMARY"
+          test "$size" -lt $((30 * 1024 * 1024))
+
+      - name: Scan the image (trivy, HIGH/CRITICAL)
+        run: make scan
+
+      # The definition of done of the Docker phase, on every PR: the stack
+      # from .env.example starts and the smoke test passes.
+      - name: Start the stack
+        run: |
+          cp .env.example .env
+          docker compose up -d --wait
+      - name: Smoke test
+        run: make smoke
+      - name: Logs of the stack
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Stop the stack
+        if: always()
+        run: docker compose down -v
