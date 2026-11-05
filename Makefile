@@ -51,6 +51,22 @@ endif
 GOLANGCI_LINT_VERSION := v2.15.0
 GOLANGCI_LINT := $(TOOLS_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION)$(GOEXE)
 
+# Other checks run by CI. CI calls these make targets too, so a local run
+# and a CI run are the same command. Go tools run with `go run pkg@version`
+# (cached by Go, nothing added to go.mod); hadolint and trivy run as pinned
+# Docker images, so they need nothing installed besides Docker.
+GOVULNCHECK_VERSION := v1.1.4
+ACTIONLINT_VERSION  := v1.7.12
+HADOLINT_IMAGE      := hadolint/hadolint:v2.15.1
+TRIVY_IMAGE         := aquasec/trivy:0.76.2
+
+# Image that docker-build builds and scan checks.
+IMAGE ?= uptime-monitor:$(VERSION)
+
+# Packages with a coverage floor (PROMPT.md §13) and the floor in percent.
+COVER_PKGS := ./internal/service ./internal/checker
+COVER_MIN  := 70
+
 # Exports variables from .env (if present) into the recipe's shell. The file
 # is sourced by sh, so it must contain plain KEY=value lines.
 LOAD_ENV := if [ -f .env ]; then set -a; . ./.env; set +a; fi;
@@ -109,7 +125,7 @@ build: ## Build binaries into bin/
 
 .PHONY: clean
 clean: ## Remove built binaries and coverage reports
-	rm -f $(addprefix $(BIN_DIR)/,$(addsuffix $(GOEXE),$(CMDS))) coverage.out coverage.html
+	rm -f $(addprefix $(BIN_DIR)/,$(addsuffix $(GOEXE),$(CMDS))) coverage.out coverage.html coverage-integration.out
 
 ##@ Local stack (Docker Compose)
 
@@ -136,8 +152,24 @@ logs: ## Follow logs of the stack
 
 .PHONY: docker-build
 docker-build: ## Build the image uptime-monitor:<version> for this platform
-	docker build -t uptime-monitor:$(VERSION) \
+	docker build -t $(IMAGE) \
 		--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg BUILT_AT=$(BUILT_AT) .
+
+# Fails on HIGH or CRITICAL vulnerabilities that have a fix (decision 044).
+# trivy reads the image from the local Docker daemon through its socket; the
+# named volume keeps the vulnerability database between runs.
+# MSYS_NO_PATHCONV: Git Bash would otherwise rewrite /var/run/docker.sock
+# into a Windows path; elsewhere the variable means nothing.
+.PHONY: scan
+scan: ## Scan the image for HIGH/CRITICAL vulnerabilities (trivy; make docker-build first)
+	MSYS_NO_PATHCONV=1 docker run --rm \
+		-v /var/run/docker.sock:/var/run/docker.sock -v uptime-trivy-cache:/root/.cache \
+		$(TRIVY_IMAGE) image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+		--exit-code 1 --no-progress $(IMAGE)
+
+.PHONY: lint-docker
+lint-docker: ## Lint the Dockerfile (hadolint)
+	docker run --rm -i $(HADOLINT_IMAGE) < Dockerfile
 
 .PHONY: smoke
 smoke: ## Check a running stack end to end (make up first)
@@ -155,14 +187,28 @@ endif
 # -count=1 disables the test cache: results depend on the containers, not
 # only on the code.
 .PHONY: test-integration
-test-integration: ## Run unit and integration tests (needs Docker)
-	$(GO) test $(RACE) -tags integration -count=1 ./...
+test-integration: ## Run unit and integration tests with coverage (needs Docker)
+	$(GO) test $(RACE) -tags integration -count=1 \
+		-covermode=atomic -coverprofile=coverage-integration.out ./...
+	@$(GO) tool cover -func=coverage-integration.out | tail -n 1
 
 .PHONY: cover
 cover: ## Run unit tests with coverage, write coverage.html
 	$(GO) test $(RACE) -covermode=atomic -coverprofile=coverage.out ./...
 	$(GO) tool cover -func=coverage.out | tail -n 1
 	$(GO) tool cover -html=coverage.out -o coverage.html
+
+.PHONY: cover-check
+cover-check: ## Fail if a key package is below the coverage floor (service, checker: 70%)
+	sh scripts/cover-check.sh $(COVER_MIN) $(COVER_PKGS)
+
+.PHONY: vuln
+vuln: ## Check dependencies and the Go toolchain for known vulnerabilities (govulncheck)
+	$(GO) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+
+.PHONY: lint-ci
+lint-ci: ## Lint the GitHub Actions workflows (actionlint)
+	$(GO) run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
 
 .PHONY: lint
 lint: $(GOLANGCI_LINT) ## Run golangci-lint
@@ -186,3 +232,11 @@ $(GOLANGCI_LINT):
 	GOBIN="$(abspath $(TOOLS_DIR)/tmp)" $(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	@mv "$(TOOLS_DIR)/tmp/golangci-lint$(GOEXE)" "$@"
 	@rm -rf "$(TOOLS_DIR)/tmp"
+
+##@ Release
+
+# Release notes from Conventional Commits since the previous tag. The release
+# workflow uses the same script for the GitHub Release.
+.PHONY: changelog
+changelog: ## Print the changelog for a release: make changelog [TAG=v0.1.0]
+	sh scripts/changelog.sh $(TAG)
