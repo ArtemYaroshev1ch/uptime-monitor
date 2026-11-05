@@ -105,6 +105,8 @@ func (a testAPI) do(t *testing.T, method, path, body, token string) *httptest.Re
 	}
 	rec := httptest.NewRecorder()
 	a.router.ServeHTTP(rec, req)
+	// Every response of every HTTP test must match api/openapi.yaml.
+	checkResponse(t, method, path, rec)
 	return rec
 }
 
