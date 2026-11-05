@@ -22,11 +22,22 @@ type Server struct {
 	shutdownTimeout time.Duration
 }
 
+// Option changes a default of the underlying http.Server.
+type Option func(*http.Server)
+
+// WithWriteTimeout sets how long writing a response may take. The ops port
+// needs more than the default: a CPU profile (/debug/pprof/profile) records
+// for 30 s by default, and net/http/pprof refuses durations that do not fit
+// in the write timeout.
+func WithWriteTimeout(d time.Duration) Option {
+	return func(s *http.Server) { s.WriteTimeout = d }
+}
+
 // New returns a Server serving h. The name ("public", "ops") appears in logs.
 // shutdownTimeout bounds how long in-flight requests may take to finish.
-func New(name string, h http.Handler, log *slog.Logger, shutdownTimeout time.Duration) *Server {
+func New(name string, h http.Handler, log *slog.Logger, shutdownTimeout time.Duration, opts ...Option) *Server {
 	log = log.With(slog.String("server", name))
-	return &Server{
+	s := &Server{
 		name: name,
 		srv: &http.Server{
 			Handler: h,
@@ -44,6 +55,10 @@ func New(name string, h http.Handler, log *slog.Logger, shutdownTimeout time.Dur
 		log:             log,
 		shutdownTimeout: shutdownTimeout,
 	}
+	for _, opt := range opts {
+		opt(s.srv)
+	}
+	return s
 }
 
 // Serve accepts connections on ln until ctx is cancelled (e.g. by SIGTERM) or

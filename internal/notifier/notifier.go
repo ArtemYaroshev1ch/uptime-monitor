@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/domain"
+	"github.com/artemyaroshev1ch/uptime-monitor/internal/observability"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/platform/clock"
 )
 
@@ -107,16 +108,24 @@ const recordTimeout = 5 * time.Second
 
 // Notifier is the outbox loop of the worker.
 type Notifier struct {
-	store  Store
-	sender Sender
-	clock  clock.Clock
-	log    *slog.Logger
-	cfg    Config
+	store   Store
+	sender  Sender
+	clock   clock.Clock
+	log     *slog.Logger
+	cfg     Config
+	metrics *observability.NotifierMetrics
 }
 
 // New returns a Notifier.
-func New(store Store, sender Sender, clk clock.Clock, log *slog.Logger, cfg Config) *Notifier {
-	return &Notifier{store: store, sender: sender, clock: clk, log: log.With(slog.String("component", "notifier")), cfg: cfg}
+func New(store Store, sender Sender, metrics *observability.NotifierMetrics, clk clock.Clock, log *slog.Logger, cfg Config) *Notifier {
+	return &Notifier{
+		store:   store,
+		sender:  sender,
+		clock:   clk,
+		log:     log.With(slog.String("component", "notifier")),
+		cfg:     cfg,
+		metrics: metrics,
+	}
 }
 
 // Backoff is the wait after the attempt-th failed attempt (1-based):
@@ -203,8 +212,11 @@ func (n *Notifier) deliver(ctx context.Context, nt domain.Notification) {
 	recCtx, cancel := context.WithTimeout(ctx, recordTimeout)
 	defer cancel()
 	now := n.clock.Now()
+	// Metrics record the outcome of the attempt, even if storing it fails
+	// below: the message was (or was not) delivered either way.
 	switch {
 	case err == nil:
+		n.metrics.Sent(nt.Channel.Type, now.Sub(nt.CreatedAt))
 		if rerr := n.store.MarkSent(recCtx, nt.ID, now); rerr != nil {
 			log.ErrorContext(ctx, "record sent notification", slog.Any("error", rerr))
 			return
@@ -213,6 +225,7 @@ func (n *Notifier) deliver(ctx context.Context, nt domain.Notification) {
 			slog.Int("attempt", attempt),
 			slog.Duration("delay", now.Sub(nt.CreatedAt)))
 	case IsPermanent(err) || attempt >= n.cfg.MaxAttempts:
+		n.metrics.Failed(nt.Channel.Type)
 		if rerr := n.store.MarkFailed(recCtx, nt.ID, err.Error()); rerr != nil {
 			log.ErrorContext(ctx, "record failed notification", slog.Any("error", rerr))
 			return
@@ -222,6 +235,7 @@ func (n *Notifier) deliver(ctx context.Context, nt domain.Notification) {
 			slog.Bool("permanent", IsPermanent(err)),
 			slog.Any("error", err))
 	default:
+		n.metrics.Retry(nt.Channel.Type)
 		next := now.Add(Backoff(attempt, n.cfg.BaseBackoff, n.cfg.MaxBackoff))
 		if rerr := n.store.MarkRetry(recCtx, nt.ID, next, err.Error()); rerr != nil {
 			log.ErrorContext(ctx, "record notification retry", slog.Any("error", rerr))

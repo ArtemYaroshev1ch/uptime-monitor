@@ -82,6 +82,25 @@ func TestRunServesUntilCancelled(t *testing.T) {
 	assert.Equal(t, http.StatusOK, get(t, "http://"+addr+"/healthz"))
 	assert.Equal(t, http.StatusServiceUnavailable, get(t, "http://"+addr+"/readyz"))
 
+	// The worker's metrics, all of them present from the start (the
+	// snapshot gauges read 0 until the database answers).
+	code, body := fetch(t, "http://"+addr+"/metrics")
+	assert.Equal(t, http.StatusOK, code)
+	for _, name := range []string{
+		"uptime_build_info", "uptime_db_pool_acquired_connections",
+		"uptime_checks_total", "uptime_check_duration_seconds", "uptime_scheduler_lag_seconds",
+		"uptime_scheduler_due_monitors", "uptime_worker_pool_busy", "uptime_worker_pool_size",
+		"uptime_notifications_total", "uptime_notification_delivery_delay_seconds",
+		"uptime_notifications_pending", "uptime_notification_oldest_pending_age_seconds",
+		"uptime_incidents_open", "uptime_incidents_opened_total", "uptime_monitors",
+		"uptime_monitors_cert_expiring", "uptime_retention_deleted_rows_total",
+		"uptime_retention_last_success_timestamp_seconds", "go_goroutines", "process_cpu_seconds_total",
+	} {
+		assert.Contains(t, body, "\n# TYPE "+name+" ", "metric %s", name)
+	}
+	assert.Contains(t, body, `uptime_build_info{commit="abc123",go_version="go1.27.0",version="1.2.3"} 1`)
+	assert.Equal(t, http.StatusNotFound, get(t, "http://"+addr+"/debug/pprof/"), "no pprof on the worker")
+
 	cancel()
 	select {
 	case err := <-done:
@@ -93,13 +112,21 @@ func TestRunServesUntilCancelled(t *testing.T) {
 
 func get(t *testing.T, url string) int {
 	t.Helper()
+	code, _ := fetch(t, url)
+	return code
+}
+
+// fetch returns the status and body of GET url.
+func fetch(t *testing.T, url string) (int, string) {
+	t.Helper()
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, http.NoBody)
 	require.NoError(t, err)
 	resp, err := testClient.Do(req)
 	require.NoError(t, err)
-	_, _ = io.Copy(io.Discard, resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
-	return resp.StatusCode
+	return resp.StatusCode, string(body)
 }
 
 // testClient opens a fresh connection per request and closes it afterwards.

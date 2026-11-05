@@ -10,10 +10,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/domain"
+	"github.com/artemyaroshev1ch/uptime-monitor/internal/observability"
+	"github.com/artemyaroshev1ch/uptime-monitor/internal/observability/obstest"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/platform/clock"
 )
 
@@ -114,10 +117,17 @@ func (s *scriptedSender) Send(context.Context, domain.Channel, domain.Message) e
 }
 
 func newNotifier(sender Sender) (*Notifier, *fakeStore, *clock.Fake) {
+	n, store, clk, _ := newNotifierWithMetrics(sender)
+	return n, store, clk
+}
+
+// newNotifierWithMetrics also returns the registry of the notifier's metrics.
+func newNotifierWithMetrics(sender Sender) (*Notifier, *fakeStore, *clock.Fake, *prometheus.Registry) {
 	clk := clock.NewFake(started)
 	store := &fakeStore{clock: clk}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(store, sender, clk, log, DefaultConfig()), store, clk
+	reg := prometheus.NewRegistry()
+	return New(store, sender, observability.NewNotifierMetrics(reg), clk, log, DefaultConfig()), store, clk, reg
 }
 
 func notification(id int64) domain.Notification {
@@ -151,7 +161,7 @@ func TestBackoff(t *testing.T) {
 
 func TestDeliverSuccess(t *testing.T) {
 	t.Parallel()
-	n, store, clk := newNotifier(&scriptedSender{})
+	n, store, clk, reg := newNotifierWithMetrics(&scriptedSender{})
 	r := store.add(notification(1))
 	clk.Advance(3 * time.Second)
 
@@ -160,6 +170,10 @@ func TestDeliverSuccess(t *testing.T) {
 	assert.Equal(t, domain.NotificationSent, r.status)
 	assert.Equal(t, 1, r.n.Attempts)
 	assert.Equal(t, clk.Now(), r.sentAt)
+	assert.InDelta(t, 1, obstest.Value(t, reg, "uptime_notifications_total", "channel_type", "webhook", "status", "sent"), 0)
+	assert.InDelta(t, 1, obstest.Value(t, reg, "uptime_notification_delivery_delay_seconds", "channel_type", "webhook"), 0)
+	assert.InDelta(t, 3, obstest.Sum(t, reg, "uptime_notification_delivery_delay_seconds", "channel_type", "webhook"), 0,
+		"delay = sent_at - created_at")
 }
 
 // TestRetriesThenFails walks a notification through every attempt: four
@@ -168,8 +182,17 @@ func TestRetriesThenFails(t *testing.T) {
 	t.Parallel()
 	failure := errors.New("webhook responded 503 Service Unavailable")
 	sender := &scriptedSender{errs: []error{failure, failure, failure, failure, failure, failure}}
-	n, store, clk := newNotifier(sender)
+	n, store, clk, reg := newNotifierWithMetrics(sender)
 	r := store.add(notification(1))
+	t.Cleanup(func() {
+		outcome := func(status string) float64 {
+			return obstest.Value(t, reg, "uptime_notifications_total", "channel_type", "webhook", "status", status)
+		}
+		assert.InDelta(t, 4, outcome("retry"), 0)
+		assert.InDelta(t, 1, outcome("failed"), 0)
+		assert.InDelta(t, 0, outcome("sent"), 0)
+		assert.InDelta(t, 0, obstest.Value(t, reg, "uptime_notification_delivery_delay_seconds", "channel_type", "webhook"), 0)
+	})
 
 	for attempt := 1; attempt <= 4; attempt++ {
 		require.Equal(t, 1, n.RunOnce(t.Context()), "attempt %d", attempt)

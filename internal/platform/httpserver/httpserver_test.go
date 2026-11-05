@@ -60,6 +60,15 @@ func TestServerTimeouts(t *testing.T) {
 	assert.Positive(t, s.srv.IdleTimeout)
 }
 
+func TestWithWriteTimeout(t *testing.T) {
+	t.Parallel()
+
+	s := New("test", http.NotFoundHandler(), slog.New(slog.DiscardHandler), time.Second, WithWriteTimeout(time.Minute))
+
+	assert.Equal(t, time.Minute, s.srv.WriteTimeout)
+	assert.Positive(t, s.srv.ReadHeaderTimeout, "other defaults are kept")
+}
+
 func TestServeAndShutdown(t *testing.T) {
 	t.Parallel()
 

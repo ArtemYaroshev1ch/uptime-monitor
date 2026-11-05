@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
@@ -45,6 +46,8 @@ type testAPI struct {
 	incidents *memory.Incidents
 	channels  *memory.Channels
 	sender    *recordingSender
+	// metrics holds the HTTP metrics of router.
+	metrics *prometheus.Registry
 }
 
 func newTestAPI(t *testing.T, db fakeDB, log *slog.Logger) testAPI {
@@ -58,6 +61,7 @@ func newTestAPI(t *testing.T, db fakeDB, log *slog.Logger) testAPI {
 	incidents := memory.NewIncidents(monitors)
 	channels := memory.NewChannels(clk.Now)
 	sender := &recordingSender{}
+	reg := prometheus.NewRegistry()
 
 	router := NewRouter(Deps{
 		BuildInfo: observability.BuildInfo{
@@ -68,6 +72,7 @@ func newTestAPI(t *testing.T, db fakeDB, log *slog.Logger) testAPI {
 		DB:          db,
 		Log:         log,
 		Clock:       clk,
+		Metrics:     observability.NewHTTPMetrics(reg),
 		Auth:        authSvc,
 		Monitors:    service.NewMonitors(monitors, checker.NewTargetPolicy(false), clk, testMonitorLimit),
 		Checks:      service.NewChecks(monitors, checks, clk),
@@ -76,7 +81,7 @@ func newTestAPI(t *testing.T, db fakeDB, log *slog.Logger) testAPI {
 		Tokens:      tokens,
 		AuthLimiter: middleware.NewRateLimiter(10, time.Minute, clk),
 	})
-	return testAPI{router: router, clock: clk, tokens: tokens, auth: authSvc, monitors: monitors, checks: checks, incidents: incidents, channels: channels, sender: sender}
+	return testAPI{router: router, clock: clk, tokens: tokens, auth: authSvc, monitors: monitors, checks: checks, incidents: incidents, channels: channels, sender: sender, metrics: reg}
 }
 
 // userToken registers a user through the service (bypassing the auth rate
@@ -367,7 +372,7 @@ func TestInternalErrorIsLoggedWithRequestID(t *testing.T) {
 	token := api.login(t, "alice@example.com", "password-1")
 	// Swap in a router whose service always fails.
 	api.router = NewRouter(Deps{
-		Log: log, Clock: api.clock, DB: fakeDB{},
+		Log: log, Clock: api.clock, DB: fakeDB{}, Metrics: observability.NewHTTPMetrics(prometheus.NewRegistry()),
 		Auth: failingAuth{}, Tokens: api.tokens,
 		AuthLimiter: middleware.NewRateLimiter(10, time.Minute, api.clock),
 	})

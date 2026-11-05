@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/domain"
+	"github.com/artemyaroshev1ch/uptime-monitor/internal/observability"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/platform/clock"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/platform/logger"
 )
@@ -56,6 +57,7 @@ type Scheduler struct {
 	log     *slog.Logger
 	clock   clock.Clock
 	cfg     Config
+	metrics *observability.SchedulerMetrics
 
 	// slots is a semaphore: a check holds one slot while it runs.
 	slots chan struct{}
@@ -66,13 +68,15 @@ type Scheduler struct {
 }
 
 // New returns a Scheduler.
-func New(store Store, checker Checker, log *slog.Logger, clk clock.Clock, cfg Config) *Scheduler {
+func New(store Store, checker Checker, metrics *observability.SchedulerMetrics, log *slog.Logger, clk clock.Clock, cfg Config) *Scheduler {
+	metrics.SetPoolSize(cfg.Concurrency)
 	return &Scheduler{
 		store:   store,
 		checker: checker,
 		log:     log.With(slog.String("component", "scheduler")),
 		clock:   clk,
 		cfg:     cfg,
+		metrics: metrics,
 		slots:   make(chan struct{}, cfg.Concurrency),
 	}
 }
@@ -152,10 +156,14 @@ func (s *Scheduler) tick(ctx, workCtx context.Context, running *sync.WaitGroup) 
 func (s *Scheduler) run(ctx context.Context, t domain.CheckTarget) {
 	ctx = logger.WithAttrs(ctx, slog.String("monitor_id", t.MonitorID.String()))
 	start := s.clock.Now()
-	// Lag is the timeliness SLI (uptime_scheduler_lag_seconds in Phase 7).
+	// Lag is the timeliness SLI: how late the check starts.
 	lag := start.Sub(t.ScheduledFor)
+	done := s.metrics.CheckStarted(lag)
+	defer done()
 
 	res := s.checker.Check(ctx, t)
+	// Counted even if the result cannot be saved: the target was checked.
+	s.metrics.CheckDone(res, s.clock.Now().Sub(start))
 
 	saveCtx, cancel := context.WithTimeout(ctx, s.cfg.SaveTimeout)
 	defer cancel()
@@ -175,6 +183,9 @@ func (s *Scheduler) run(ctx context.Context, t domain.CheckTarget) {
 		slog.Int("response_time_ms", res.ResponseTimeMs),
 		slog.Duration("lag", lag),
 	)
+	if change.Opened != nil {
+		s.metrics.IncidentOpened()
+	}
 	s.logIncident(ctx, change)
 }
 

@@ -7,7 +7,7 @@ import (
 )
 
 // ErrorKind classifies a failed check. The values are a closed list: they
-// are stored, returned by the API and become a metric label in Phase 7.
+// are stored, returned by the API and used as a metric label.
 type ErrorKind string
 
 // Error kinds. An empty ErrorKind means the check succeeded.
@@ -21,6 +21,15 @@ const (
 	ErrorBlockedTarget    ErrorKind = "blocked_target"
 	ErrorUnknown          ErrorKind = "unknown"
 )
+
+// ErrorKinds returns every error kind. Metrics use it to create all label
+// values up front, so a kind that has not happened yet reads 0, not "no data".
+func ErrorKinds() []ErrorKind {
+	return []ErrorKind{
+		ErrorDNS, ErrorTimeout, ErrorConnection, ErrorTLS,
+		ErrorUnexpectedStatus, ErrorKeywordMismatch, ErrorBlockedTarget, ErrorUnknown,
+	}
+}
 
 // CheckTarget is what the checker needs to check one monitor. The scheduler
 // builds it from a claimed monitor.

@@ -1,5 +1,10 @@
 // Package observability holds what operators use to see inside the service:
-// build metadata now, the metrics registry and collectors later.
+// build metadata, the Prometheus registry and the metrics of every component.
+//
+// The metric names and labels are a public contract (docs/metrics.md): the
+// dashboards and alerts in uptime-infra depend on them. Labels take values
+// from closed lists only, never user input or IDs, so the number of series
+// stays bounded however many users and monitors there are.
 package observability
 
 import "runtime"

@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/auth"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/checker"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/config"
@@ -25,6 +27,7 @@ import (
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/platform/healthcheck"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/platform/httpserver"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/platform/logger"
+	"github.com/artemyaroshev1ch/uptime-monitor/internal/platform/ops"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/platform/postgres"
 	repository "github.com/artemyaroshev1ch/uptime-monitor/internal/repository/postgres"
 	svc "github.com/artemyaroshev1ch/uptime-monitor/internal/service"
@@ -43,6 +46,10 @@ const service = "api"
 
 // healthcheckTimeout is how long -healthcheck waits for /healthz.
 const healthcheckTimeout = 3 * time.Second
+
+// opsWriteTimeout lets a CPU profile of up to a minute be taken on the ops
+// port (see httpserver.WithWriteTimeout).
+const opsWriteTimeout = 70 * time.Second
 
 // authRateLimit is how many /api/v1/auth/* requests one IP may make per minute.
 const authRateLimit = 10
@@ -120,26 +127,36 @@ func serve(ctx context.Context, cfg config.API, info observability.BuildInfo, st
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
+	opsLn, err := lc.Listen(ctx, "tcp", cfg.OpsAddr)
+	if err != nil {
+		return errors.Join(fmt.Errorf("listen ops: %w", err), ln.Close())
+	}
 
 	log.Info("api starting",
 		slog.String("env", string(cfg.Env)),
 		slog.String("commit", info.Commit),
 		slog.String("go_version", info.GoVersion),
 	)
+	if cfg.PprofEnabled {
+		log.Warn("PPROF_ENABLED is on: the profiler is served on the ops port")
+	}
 
 	pool, err := postgres.NewPool(ctx, postgres.PoolConfig{URL: cfg.DB.URL, MaxConns: cfg.DB.MaxConns})
 	if err != nil {
-		return err
+		return errors.Join(err, ln.Close(), opsLn.Close())
 	}
-	// Deferred, so it runs after Serve has returned: in-flight requests have
-	// finished with their connections by then.
+	// Deferred, so it runs after both servers have returned: in-flight
+	// requests have finished with their connections by then.
 	defer pool.Close()
+
+	reg := observability.NewRegistry(info)
+	reg.MustRegister(observability.NewPoolCollector(pool))
 
 	clk := clock.System{}
 	tokens := auth.NewTokens([]byte(cfg.Auth.JWTSecret), cfg.Auth.AccessTokenTTL, clk)
 	authSvc, err := svc.NewAuth(repository.NewUsers(pool), auth.NewPasswords(auth.DefaultBcryptCost), tokens)
 	if err != nil {
-		return err
+		return errors.Join(err, ln.Close(), opsLn.Close())
 	}
 	if cfg.AllowPrivateTargets {
 		log.Warn("ALLOW_PRIVATE_TARGETS is on: monitors may target internal addresses; never use this in production")
@@ -160,6 +177,7 @@ func serve(ctx context.Context, cfg config.API, info observability.BuildInfo, st
 		DB:                pool,
 		Log:               log,
 		Clock:             clk,
+		Metrics:           observability.NewHTTPMetrics(reg),
 		Auth:              authSvc,
 		Monitors:          monitorSvc,
 		Checks:            checkSvc,
@@ -169,7 +187,22 @@ func serve(ctx context.Context, cfg config.API, info observability.BuildInfo, st
 		AuthLimiter:       middleware.NewRateLimiter(authRateLimit, time.Minute, clk),
 		TrustProxyHeaders: cfg.TrustProxyHeaders,
 	})
-	if err := httpserver.New("public", router, log, cfg.ShutdownTimeout).Serve(ctx, ln); err != nil {
+	opsHandler := ops.Handler(log, ops.Options{
+		Checks:  []ops.Check{{Name: "database", Fn: pool.Ping}},
+		Metrics: observability.Handler(reg),
+		Pprof:   cfg.PprofEnabled,
+	})
+
+	// errgroup runs both servers with a shared context: on SIGTERM (or if
+	// one of them fails) both shut down gracefully; Wait returns the first
+	// error.
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return httpserver.New("public", router, log, cfg.ShutdownTimeout).Serve(gctx, ln) })
+	g.Go(func() error {
+		return httpserver.New("ops", opsHandler, log, cfg.ShutdownTimeout, httpserver.WithWriteTimeout(opsWriteTimeout)).
+			Serve(gctx, opsLn)
+	})
+	if err := g.Wait(); err != nil {
 		return err
 	}
 

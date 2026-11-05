@@ -649,3 +649,111 @@ Sent and failed rows are kept. PROMPT.md defines retention only for checks;
 an outbox cleanup (e.g. rows older than `CHECKS_RETENTION_DAYS`) is a small
 addition to the retention loop, left for when the growth of the table
 matters.
+
+## 034. Metrics: one injected registry per process, metric types in `observability`
+
+*2026-11-05, Phase 7*
+
+**Context.** Every component needs metrics, the catalog is a contract with
+`uptime-infra`, and CLAUDE.md forbids global state (no default registry).
+
+**Decision.** `observability.NewRegistry` creates one `prometheus.Registry`
+per process with `go_*`, `process_*` and `uptime_build_info`. Each component
+gets a small typed value built on that registry
+(`NewSchedulerMetrics(reg)`, `NewNotifierMetrics`, `NewRetentionMetrics`,
+`NewHTTPMetrics`) with methods named after events (`CheckDone`,
+`Sent`, `Retry`), passed to its constructor. All names and buckets live in
+one package, next to the catalog test; components never see label strings.
+Vector metrics create every known label value at startup, so a value that
+has not happened yet reads 0, not "no data". Registration uses
+`MustRegister`: it panics only on a programming error (a duplicate name),
+which the tests that build the full registry catch before any release.
+Tests read values by name through `observability/obstest`.
+
+**Alternatives.** `promauto` with the default registry: global state, and
+tests would share values. Interfaces per component with no-op fakes: more
+code, and the real metrics would go untested. Each package defining its own
+metrics: the catalog would be scattered across the tree.
+
+## 035. HTTP metrics: probes excluded, route templates only, Logging outside Recover
+
+*2026-11-05, Phase 7*
+
+**Decision.** The metrics middleware sits right after RequestID and wraps
+everything else, so it times the whole request and sees the final status.
+`/healthz` and `/readyz` are left out of `uptime_http_requests_total` and
+the duration histogram (they count towards in-flight only): probes always
+succeed and would inflate the availability SLI. The `route` label is the
+chi template read after routing; chi reports an unknown path under a
+sub-router as the mount pattern `/api/v1/*`, so a pattern ending in `/*`
+becomes `unmatched` (the API has no wildcard routes of its own). Methods
+outside the standard set become `other`. Access logs use the same route
+function.
+
+The middleware order changed to `RequestID, Metrics, Logging, Recover,
+BodyLimit`: before, Recover wrapped Logging, so a panicking request had a
+panic log but no access log. Now Recover turns the panic into a 500 that
+Logging and Metrics record like any other response.
+
+**Alternatives.** Counting probes and filtering them in every query: easy
+to forget in one recording rule. Raw paths with IDs replaced by a regexp:
+fragile, and junk paths would still create series.
+
+## 036. Database-backed gauges: refreshed by the worker every 15 s
+
+*2026-11-05, Phase 7*
+
+**Decision.** `scheduler_due_monitors`, `notifications_pending`,
+`notification_oldest_pending_age_seconds`, `incidents_open`, `monitors`
+and `monitors_cert_expiring` come from one SQL statement
+(`repository/postgres.Stats`), run by a fifth worker loop every 15 s with a
+5 s timeout. A failed refresh is logged at warn level and keeps the last
+values; it never stops the worker. Only the worker runs it: the API is
+scaled for requests, and the values describe the whole system, so one
+source is enough. With several workers every replica reports the same
+values: dashboards aggregate them with `max` (docs/metrics.md).
+`due_monitors` is measured in the database (active monitors with
+`next_check_at <= now()`), which is the backlog of all workers rather than
+of the last tick of one. "Expiring" uses the certwatch condition without
+the "already warned" part.
+
+**Alternatives.** Querying at scrape time (a custom Collector): every
+Prometheus server and every manual `curl` would hit the database, and a
+slow database would make scrapes time out. Counting in memory: wrong with
+several replicas and after restarts.
+
+## 037. Connection pool metrics: gauges for state, counters for totals
+
+*2026-11-05, Phase 7*
+
+**Decision.** PROMPT.md lists `uptime_db_pool_*` as gauges. The current
+state is exported as gauges (`acquired_connections`, `idle_connections`,
+`total_connections`, `max_connections`); the cumulative values of
+`pgxpool.Stat` are exported as counters with `_total`
+(`acquires_total`, `acquire_waits_total`,
+`acquire_wait_seconds_total`), because they only grow and `rate()` needs
+counters (promlint also requires it). The collector reads `Stat()` at
+scrape time: it is in memory and cheap. The API and the worker both export
+it.
+
+## 038. Ops ports
+
+*2026-11-05, Phase 7*
+
+**Decision.** The API runs a second `http.Server` on `OPS_ADDR` (`:9090`)
+with `/metrics`, `/healthz`, `/readyz` and, with `PPROF_ENABLED=true`,
+`/debug/pprof/`. Both servers run in one errgroup and shut down together.
+The worker's ops port (`:9091`) gains `/metrics`; pprof stays an API
+option, as in the contract with `uptime-infra`. pprof handlers are
+registered on the ops mux explicitly (the `net/http/pprof` import also
+registers them on `http.DefaultServeMux`, which nothing serves). The ops
+server has a 70 s write timeout instead of 30 s: `net/http/pprof` refuses a
+CPU profile longer than the write timeout, and the default profile is 30 s.
+
+`make run-api` and `make run-worker` set `OPS_ADDR` per process
+(`127.0.0.1:9090` and `127.0.0.1:9091`), because both read the same `.env`.
+
+**Alternatives.** `/metrics` on the public router behind a token: one
+leaked token or misconfigured proxy exposes internals; a separate port is
+private by network. Separate variables (`API_OPS_ADDR`, `WORKER_OPS_ADDR`):
+the contract with `uptime-infra` names one `OPS_ADDR` per process.
