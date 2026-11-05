@@ -7,6 +7,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,6 +97,59 @@ func TestCatalogIsComplete(t *testing.T) {
 	}
 	assert.True(t, got["go_goroutines"], "Go runtime metrics")
 	assert.True(t, got["process_cpu_seconds_total"], "process metrics")
+}
+
+// TestCatalogMatchesDocs keeps docs/metrics.md, the contract with
+// uptime-infra, true: every uptime_* metric the processes expose is in a
+// catalog table with the same type and label names, and the tables list
+// nothing that does not exist.
+func TestCatalogMatchesDocs(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile("../../docs/metrics.md")
+	require.NoError(t, err)
+
+	// A catalog row: | `name` | type | labels | meaning | used for |
+	row := regexp.MustCompile("^\\| `(uptime_[a-z_]+)` \\| ([a-z]+)[^|]* \\| ([^|]*) \\|")
+	label := regexp.MustCompile("`([a-z_]+)`")
+	parens := regexp.MustCompile(`\([^)]*\)`)
+	type entry struct {
+		Type   string
+		Labels []string
+	}
+	documented := map[string]entry{}
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		m := row.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		// Label values are listed in parentheses: `result` (`success`/...).
+		labels := []string{}
+		for _, l := range label.FindAllStringSubmatch(parens.ReplaceAllString(m[3], ""), -1) {
+			labels = append(labels, l[1])
+		}
+		sort.Strings(labels)
+		documented[m[1]] = entry{Type: m[2], Labels: labels}
+	}
+	require.NotEmpty(t, documented, "no catalog rows found in docs/metrics.md")
+
+	families, err := fullRegistry(t).Gather()
+	require.NoError(t, err)
+	exposed := map[string]entry{}
+	for _, mf := range families {
+		if !strings.HasPrefix(mf.GetName(), "uptime_") {
+			continue
+		}
+		labels := []string{}
+		if ms := mf.GetMetric(); len(ms) > 0 {
+			for _, lp := range ms[0].GetLabel() {
+				labels = append(labels, lp.GetName())
+			}
+		}
+		sort.Strings(labels)
+		exposed[mf.GetName()] = entry{Type: strings.ToLower(mf.GetType().String()), Labels: labels}
+	}
+
+	assert.Equal(t, exposed, documented, "docs/metrics.md and the exposed metrics differ")
 }
 
 // TestLint runs promlint, the linter of the Prometheus project: naming

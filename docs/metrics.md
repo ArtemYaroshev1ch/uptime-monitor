@@ -33,7 +33,9 @@ Adding metrics or label values is safe.
 - Enforced by tests: `internal/httpapi/metrics_test.go` (route templates and
   methods only, no IDs in the exposition) and
   `internal/observability/observability_test.go` (every metric of this
-  catalog is present, `promlint` finds no problems).
+  catalog is present, `promlint` finds no problems, and
+  `TestCatalogMatchesDocs` compares the tables of this file with the
+  exposed metrics: names, types and label names).
 
 ## Catalog
 
