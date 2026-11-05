@@ -22,6 +22,15 @@ const (
 	ErrorUnknown          ErrorKind = "unknown"
 )
 
+// ErrorKinds returns every error kind. Metrics use it to create all label
+// values up front, so a kind that has not happened yet reads 0, not "no data".
+func ErrorKinds() []ErrorKind {
+	return []ErrorKind{
+		ErrorDNS, ErrorTimeout, ErrorConnection, ErrorTLS,
+		ErrorUnexpectedStatus, ErrorKeywordMismatch, ErrorBlockedTarget, ErrorUnknown,
+	}
+}
+
 // CheckTarget is what the checker needs to check one monitor. The scheduler
 // builds it from a claimed monitor.
 type CheckTarget struct {

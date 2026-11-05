@@ -15,6 +15,11 @@ const (
 	ChannelWebhook  ChannelType = "webhook"
 )
 
+// ChannelTypes returns every channel type.
+func ChannelTypes() []ChannelType {
+	return []ChannelType{ChannelTelegram, ChannelWebhook}
+}
+
 // ChannelConfig is the type-specific part of a channel. Telegram uses ChatID,
 // a webhook URL and Secret.
 type ChannelConfig struct {
