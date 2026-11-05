@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"bufio"
@@ -52,7 +52,7 @@ func setEnv(t *testing.T, kv map[string]string) {
 func TestRunVersion(t *testing.T) {
 	var out strings.Builder
 
-	err := run(t.Context(), []string{"-version"}, testInfo, &out)
+	err := Run(t.Context(), []string{"-version"}, testInfo, &out)
 
 	require.NoError(t, err)
 	assert.Equal(t, "api 1.2.3 (commit abc123, built 2026-01-02T03:04:05Z, go1.27.0)\n", out.String())
@@ -61,7 +61,7 @@ func TestRunVersion(t *testing.T) {
 func TestRunInvalidConfig(t *testing.T) {
 	setEnv(t, map[string]string{"APP_ENV": "staging"})
 
-	err := run(t.Context(), nil, testInfo, io.Discard)
+	err := Run(t.Context(), nil, testInfo, io.Discard)
 
 	require.ErrorContains(t, err, "APP_ENV")
 }
@@ -88,7 +88,7 @@ func TestRunHealthcheck(t *testing.T) {
 			t.Cleanup(srv.Close)
 			setEnv(t, map[string]string{"HTTP_ADDR": srv.Listener.Addr().String()})
 
-			err := run(t.Context(), []string{"-healthcheck"}, testInfo, io.Discard)
+			err := Run(t.Context(), []string{"-healthcheck"}, testInfo, io.Discard)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -109,7 +109,7 @@ func TestRunServesUntilCancelled(t *testing.T) {
 	logs, logWriter := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
-		err := run(ctx, nil, testInfo, logWriter)
+		err := Run(ctx, nil, testInfo, logWriter)
 		_ = logWriter.Close()
 		done <- err
 	}()
@@ -158,7 +158,7 @@ func fetch(t *testing.T, url string) (int, string) {
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, http.NoBody)
 	require.NoError(t, err)
 	// No keep-alive, so no spare connection delays the shutdown (see the
-	// same client in cmd/worker/main_test.go).
+	// same client in internal/app/worker/worker_test.go).
 	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 	resp, err := client.Do(req)
 	require.NoError(t, err)

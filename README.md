@@ -55,19 +55,29 @@ structured logs and graceful shutdown.
 
 ## Quick start
 
-Requirements: Go 1.27+, GNU Make, a POSIX shell (on Windows: Git for Windows,
-see [Windows](#windows)) and Docker with Compose v2.
+Requirements: Docker with Compose v2.
 
 ```sh
 cp .env.example .env
-# set JWT_SECRET in .env, e.g. to the output of: openssl rand -base64 48
-make up           # PostgreSQL in Docker, waits until healthy
+docker compose up --build    # or: make up (detached, waits until healthy)
+```
+
+This builds the image and starts PostgreSQL, runs the migrations, then
+starts the API on `127.0.0.1:8080` and the worker. `.env.example` works as
+is for local use; its `JWT_SECRET` is public, and the API refuses it with
+`APP_ENV=prod`. `make smoke` checks the running stack end to end.
+
+Without Docker for the application (Go 1.27+, GNU Make, a POSIX shell; on
+Windows see [Windows](#windows)):
+
+```sh
+make db           # only PostgreSQL in Docker
 make migrate-up   # apply migrations
 make run-api      # terminal 1
 make run-worker   # terminal 2: checks monitors
 ```
 
-In another terminal:
+Then:
 
 ```sh
 curl http://localhost:8080/healthz
@@ -113,7 +123,7 @@ curl -X POST http://localhost:8080/api/v1/channels/<id>/test -H "Authorization: 
 # {"delivered":true}
 curl -X DELETE http://localhost:8080/api/v1/monitors/<id> -H "Authorization: Bearer $TOKEN"
 
-# Metrics, on the ops ports only (make run-* binds them to 127.0.0.1)
+# Metrics, on the ops ports (published on 127.0.0.1 only)
 curl -s http://127.0.0.1:9090/metrics | grep '^uptime_http_requests_total'
 # uptime_http_requests_total{code="201",method="POST",route="/api/v1/monitors"} 1 ...
 curl -s http://127.0.0.1:9091/metrics | grep '^uptime_checks_total'
@@ -131,12 +141,13 @@ Codes: `validation_failed` (400), `unauthorized` (401), `not_found` (404),
 `conflict` (409), `rate_limited` (429, with `Retry-After`), `internal` (500).
 The API is described in [api/openapi.yaml](api/openapi.yaml).
 
-*Planned:* the whole system with `docker compose up --build`.
-
 ## Configuration
 
-All configuration comes from environment variables. `make run-api` and
-`make run-worker` also read `.env` if it exists.
+All configuration comes from environment variables. `docker compose`,
+`make run-api` and `make run-worker` also read `.env` if it exists. In the
+compose stack, `docker-compose.yml` sets the listen addresses and
+`DATABASE_URL` (host `postgres`) itself; those values in `.env` apply only
+to binaries started on the host.
 
 | Variable                | Description                                             | Default |
 |-------------------------|---------------------------------------------------------|---------|
@@ -146,7 +157,7 @@ All configuration comes from environment variables. `make run-api` and
 | `DATABASE_URL`          | PostgreSQL URL (**required**, contains password)        | —       |
 | `DB_MAX_CONNS`          | connection pool size of one `api` process               | `10`    |
 | `SHUTDOWN_TIMEOUT`      | time for in-flight requests to finish on SIGTERM        | `25s`   |
-| `JWT_SECRET`            | token signing key, ≥ 32 bytes (**required**, secret)    | —       |
+| `JWT_SECRET`            | token signing key, ≥ 32 bytes (**required**, secret); the example value is refused with `APP_ENV=prod` | — |
 | `ACCESS_TOKEN_TTL`      | access token lifetime                                   | `12h`   |
 | `TRUST_PROXY_HEADERS`   | rate-limit by `X-Forwarded-For` (behind a proxy only)   | `false` |
 | `MAX_MONITORS_PER_USER` | monitors one user may have                              | `20`    |
@@ -228,6 +239,13 @@ problem.
   the same on all replicas: aggregate them with `max`. With
   `PPROF_ENABLED=true`: `go tool pprof http://127.0.0.1:9090/debug/pprof/profile?seconds=30`
   (CPU) or `.../debug/pprof/heap` (memory).
+- **Image:** `uptime-monitor` with one static binary and the links
+  `/app/api`, `/app/worker`, `/app/migrate` (run `migrate up` before a new
+  version starts). distroless/static, uid 65532, no shell: debug with the
+  ops endpoints and logs, not `docker exec`. About 25 MB unpacked. In the
+  compose stack the containers have a read-only root filesystem and no
+  Linux capabilities; `docker stop` sends SIGTERM and waits 30 s
+  (`stop_grace_period`), more than `SHUTDOWN_TIMEOUT`.
 - *Planned:* the rollback procedure.
 
 ### Migrations
@@ -310,18 +328,25 @@ make test-integration  # plus tests against PostgreSQL in Docker (testcontainers
 make lint   # golangci-lint (installed into bin/tools on first run)
 make fmt    # gofmt + goimports
 make cover  # coverage report in coverage.html
+make up smoke      # whole stack in Docker, then the smoke test
+make docker-build  # only the image, tagged uptime-monitor:<version>
 ```
 
 ```
-cmd/api/                  API binary
-cmd/migrate/              migration binary
+cmd/api|worker|migrate/   one binary per command (local runs)
+cmd/uptime-monitor/       all-in-one binary of the Docker image
+internal/app/             the commands: api, worker, migrate
 internal/config/          environment configuration and validation
 internal/httpapi/         router, handlers, JSON responses
+internal/scheduler/       check loop; checker/, notifier/, certwatch/, retention/
+internal/service/         business rules; repository/ stores them in PostgreSQL
 internal/observability/   build information, Prometheus registry and metrics
-internal/platform/        logger, HTTP server, self health check, PostgreSQL
+internal/platform/        logger, HTTP servers, health checks, PostgreSQL
 migrations/               SQL migrations (embedded)
-docker-compose.yml        local PostgreSQL
-docs/decisions.md         design decisions
+Dockerfile                multi-stage build, distroless runtime
+docker-compose.yml        local stack: postgres, migrate, api, worker
+scripts/smoke.sh          end-to-end check of a running stack
+docs/                     decisions, metrics catalog
 ```
 
 ### Windows
@@ -337,7 +362,11 @@ The project builds natively on Windows without WSL:
 - Listening on `:8080` triggers a Windows Firewall prompt on first run. Set
   `HTTP_ADDR=127.0.0.1:8080` in `.env` to stay on loopback. `make run-*`
   already binds the ops ports to `127.0.0.1`.
-- Docker Desktop must be running for `make up` and `make test-integration`.
+- Docker Desktop must be running for `make up`, `make db` and
+  `make test-integration`.
+- Git Bash rewrites arguments that look like Unix paths: `docker run IMAGE
+  /app/worker` becomes `C:/Program Files/Git/app/worker`. Prefix such
+  commands with `MSYS_NO_PATHCONV=1` (PowerShell is not affected).
 - `DATABASE_URL` uses `127.0.0.1`, not `localhost`: `localhost` resolves to
   `::1` first, where the container does not listen, and each connection waits
   about 2 s before falling back to IPv4.
@@ -359,7 +388,7 @@ Deployment, monitoring stack, SLOs, alerts and runbooks live in the
 - [x] Phase 5: incidents
 - [x] Phase 6: notifications and certificate warnings
 - [x] Phase 7: observability
-- [ ] Phase 8: Docker
+- [x] Phase 8: Docker
 - [ ] Phase 9: CI/CD
 - [ ] Phase 10: documentation and v1.0.0
 

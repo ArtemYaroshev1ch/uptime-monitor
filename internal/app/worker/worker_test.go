@@ -1,4 +1,4 @@
-package main
+package worker
 
 import (
 	"bufio"
@@ -47,7 +47,7 @@ func setEnv(t *testing.T, kv map[string]string) {
 func TestRunVersion(t *testing.T) {
 	var out strings.Builder
 
-	require.NoError(t, run(t.Context(), []string{"-version"}, testInfo, &out))
+	require.NoError(t, Run(t.Context(), []string{"-version"}, testInfo, &out))
 
 	assert.Equal(t, "worker 1.2.3 (commit abc123, built 2026-01-02T03:04:05Z, go1.27.0)\n", out.String())
 }
@@ -55,7 +55,7 @@ func TestRunVersion(t *testing.T) {
 func TestRunInvalidConfig(t *testing.T) {
 	setEnv(t, map[string]string{"WORKER_CONCURRENCY": "0"})
 
-	err := run(t.Context(), nil, testInfo, io.Discard)
+	err := Run(t.Context(), nil, testInfo, io.Discard)
 
 	require.ErrorContains(t, err, "WORKER_CONCURRENCY")
 }
@@ -71,7 +71,7 @@ func TestRunServesUntilCancelled(t *testing.T) {
 	logs, logWriter := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
-		err := run(ctx, nil, testInfo, logWriter)
+		err := Run(ctx, nil, testInfo, logWriter)
 		_ = logWriter.Close()
 		done <- err
 	}()
