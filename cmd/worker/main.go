@@ -154,6 +154,9 @@ func serve(ctx context.Context, cfg config.Worker, info observability.BuildInfo,
 	// Runs after the group has finished: no loop uses the pool any more.
 	defer pool.Close()
 
+	reg := observability.NewRegistry(info)
+	reg.MustRegister(observability.NewPoolCollector(pool))
+
 	userAgent := "uptime-monitor/" + info.Version + " (+https://github.com/artemyaroshev1ch/uptime-monitor)"
 	clk := clock.System{}
 	checks := repository.NewChecks(pool)
@@ -162,14 +165,14 @@ func serve(ctx context.Context, cfg config.Worker, info observability.BuildInfo,
 		Clock:        clk,
 		UserAgent:    userAgent,
 	})
-	sched := scheduler.New(checks, chk, log, clk, scheduler.Config{
+	sched := scheduler.New(checks, chk, observability.NewSchedulerMetrics(reg), log, clk, scheduler.Config{
 		Concurrency:     cfg.Concurrency,
 		BatchSize:       cfg.BatchSize,
 		Tick:            schedulerTick,
 		ShutdownTimeout: cfg.ShutdownTimeout,
 		SaveTimeout:     saveTimeout,
 	})
-	cleaner := retention.New(checks, clk, log, retention.Config{
+	cleaner := retention.New(checks, observability.NewRetentionMetrics(reg), clk, log, retention.Config{
 		Keep:     time.Duration(cfg.RetentionDays) * 24 * time.Hour,
 		Interval: retentionInterval,
 		Batch:    retentionBatch,
@@ -183,18 +186,22 @@ func serve(ctx context.Context, cfg config.Worker, info observability.BuildInfo,
 	if cfg.Notify.TelegramBotToken == "" {
 		log.Warn("TELEGRAM_BOT_TOKEN is not set: notifications to telegram channels will fail")
 	}
-	delivery := notifier.New(outbox, sender, clk, log, notifier.DefaultConfig())
+	delivery := notifier.New(outbox, sender, observability.NewNotifierMetrics(reg), clk, log, notifier.DefaultConfig())
+	stats := observability.NewStatsCollector(reg, repository.NewStats(pool), clk, log, observability.DefaultStatsConfig())
 	watcher := certwatch.New(outbox, clk, log, certwatchInterval)
 
-	opsHandler := ops.Handler(log,
-		ops.Check{Name: "database", Fn: pool.Ping},
-		ops.Check{Name: "scheduler", Fn: func(context.Context) error {
-			if age := clk.Now().Sub(sched.Heartbeat()); age > heartbeatMaxAge {
-				return fmt.Errorf("last heartbeat %s ago", age.Round(time.Second))
-			}
-			return nil
-		}},
-	)
+	opsHandler := ops.Handler(log, ops.Options{
+		Checks: []ops.Check{
+			{Name: "database", Fn: pool.Ping},
+			{Name: "scheduler", Fn: func(context.Context) error {
+				if age := clk.Now().Sub(sched.Heartbeat()); age > heartbeatMaxAge {
+					return fmt.Errorf("last heartbeat %s ago", age.Round(time.Second))
+				}
+				return nil
+			}},
+		},
+		Metrics: observability.Handler(reg),
+	})
 
 	// errgroup runs the loops side by side with a shared context: when one
 	// fails, the context is cancelled and the others stop too; Wait returns
@@ -205,6 +212,7 @@ func serve(ctx context.Context, cfg config.Worker, info observability.BuildInfo,
 	g.Go(func() error { return cleaner.Run(gctx) })
 	g.Go(func() error { return delivery.Run(gctx) })
 	g.Go(func() error { return watcher.Run(gctx) })
+	g.Go(func() error { return stats.Run(gctx) })
 	g.Go(func() error { return httpserver.New("ops", opsHandler, log, cfg.ShutdownTimeout).Serve(gctx, ln) })
 	if err := g.Wait(); err != nil {
 		return err

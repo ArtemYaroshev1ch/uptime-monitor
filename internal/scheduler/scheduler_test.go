@@ -11,10 +11,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/domain"
+	"github.com/artemyaroshev1ch/uptime-monitor/internal/observability"
+	"github.com/artemyaroshev1ch/uptime-monitor/internal/observability/obstest"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/platform/clock"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/platform/logger"
 )
@@ -130,11 +133,15 @@ func start(t *testing.T, s *Scheduler) (stop func()) {
 
 func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
+func newMetrics() *observability.SchedulerMetrics {
+	return observability.NewSchedulerMetrics(prometheus.NewRegistry())
+}
+
 func TestSchedulerChecksAndSaves(t *testing.T) {
 	t.Parallel()
 	targets := []domain.CheckTarget{{MonitorID: uuid.New()}, {MonitorID: uuid.New()}, {MonitorID: uuid.New()}, {MonitorID: uuid.New()}}
 	store := newFakeStore(targets...)
-	s := New(store, &fakeChecker{}, discard(), clock.System{}, testConfig())
+	s := New(store, &fakeChecker{}, newMetrics(), discard(), clock.System{}, testConfig())
 
 	stop := start(t, s)
 	require.Eventually(t, func() bool { return store.savedCount() == len(targets) }, 5*time.Second, 5*time.Millisecond)
@@ -146,6 +153,56 @@ func TestSchedulerChecksAndSaves(t *testing.T) {
 	assert.False(t, s.Heartbeat().IsZero())
 }
 
+// resultChecker returns the same result for every target.
+type resultChecker domain.CheckResult
+
+func (r resultChecker) Check(context.Context, domain.CheckTarget) domain.CheckResult {
+	return domain.CheckResult(r)
+}
+
+func TestSchedulerRecordsMetrics(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	store := newFakeStore(
+		domain.CheckTarget{MonitorID: uuid.New(), ScheduledFor: now.Add(-3 * time.Second)},
+		domain.CheckTarget{MonitorID: uuid.New(), ScheduledFor: now.Add(-3 * time.Second)},
+	)
+	store.change = domain.IncidentChange{Opened: &domain.Incident{ID: uuid.New()}}
+	reg := prometheus.NewRegistry()
+	s := New(store, resultChecker{ErrorKind: domain.ErrorTimeout}, observability.NewSchedulerMetrics(reg), discard(), clock.System{}, testConfig())
+
+	stop := start(t, s)
+	require.Eventually(t, func() bool { return store.savedCount() == 2 }, 5*time.Second, time.Millisecond)
+	stop() // waits for the checks, so every metric is recorded
+
+	assert.InDelta(t, 2, obstest.Value(t, reg, "uptime_checks_total", "result", "failure", "error_kind", "timeout"), 0)
+	assert.InDelta(t, 0, obstest.Value(t, reg, "uptime_checks_total", "result", "success", "error_kind", "none"), 0,
+		"pre-created at 0")
+	assert.InDelta(t, 2, obstest.Value(t, reg, "uptime_check_duration_seconds"), 0)
+	assert.InDelta(t, 2, obstest.Value(t, reg, "uptime_scheduler_lag_seconds"), 0)
+	assert.GreaterOrEqual(t, obstest.Sum(t, reg, "uptime_scheduler_lag_seconds"), 6.0, "each check started at least 3 s late")
+	assert.InDelta(t, 2, obstest.Value(t, reg, "uptime_incidents_opened_total"), 0)
+	assert.InDelta(t, 3, obstest.Value(t, reg, "uptime_worker_pool_size"), 0)
+	assert.InDelta(t, 0, obstest.Value(t, reg, "uptime_worker_pool_busy"), 0, "nothing runs after the stop")
+}
+
+// TestSchedulerPoolBusy watches the busy gauge while checks are blocked.
+func TestSchedulerPoolBusy(t *testing.T) {
+	t.Parallel()
+	store := newFakeStore()
+	store.endless = true
+	checker := &fakeChecker{release: make(chan struct{})}
+	reg := prometheus.NewRegistry()
+	s := New(store, checker, observability.NewSchedulerMetrics(reg), discard(), clock.System{}, testConfig())
+
+	stop := start(t, s)
+	busy := func() float64 { return obstest.Value(t, reg, "uptime_worker_pool_busy") }
+	require.Eventually(t, func() bool { return busy() == 3 }, 5*time.Second, time.Millisecond, "the pool fills up")
+	close(checker.release)
+	stop()
+	assert.InDelta(t, 0, busy(), 0)
+}
+
 // The scheduler never runs more checks than the pool size and never claims
 // more monitors than it has free slots for.
 func TestSchedulerRespectsConcurrency(t *testing.T) {
@@ -154,7 +211,7 @@ func TestSchedulerRespectsConcurrency(t *testing.T) {
 	store.endless = true
 	checker := &fakeChecker{release: make(chan struct{})}
 	cfg := testConfig()
-	s := New(store, checker, discard(), clock.System{}, cfg)
+	s := New(store, checker, newMetrics(), discard(), clock.System{}, cfg)
 
 	stop := start(t, s)
 	require.Eventually(t, func() bool { return checker.running.Load() == int64(cfg.Concurrency) }, 5*time.Second, time.Millisecond)
@@ -176,7 +233,7 @@ func TestSchedulerBatchSize(t *testing.T) {
 	store := newFakeStore()
 	cfg := testConfig()
 	cfg.Concurrency, cfg.BatchSize = 100, 7
-	s := New(store, &fakeChecker{}, discard(), clock.System{}, cfg)
+	s := New(store, &fakeChecker{}, newMetrics(), discard(), clock.System{}, cfg)
 
 	stop := start(t, s)
 	require.Eventually(t, func() bool { store.mu.Lock(); defer store.mu.Unlock(); return len(store.limits) > 0 }, time.Second, time.Millisecond)
@@ -190,7 +247,7 @@ func TestSchedulerGracefulShutdown(t *testing.T) {
 	t.Parallel()
 	store := newFakeStore(domain.CheckTarget{MonitorID: uuid.New()})
 	checker := &fakeChecker{release: make(chan struct{})}
-	s := New(store, checker, discard(), clock.System{}, testConfig())
+	s := New(store, checker, newMetrics(), discard(), clock.System{}, testConfig())
 	stop := start(t, s)
 	require.Eventually(t, func() bool { return checker.running.Load() == 1 }, 5*time.Second, time.Millisecond)
 
@@ -215,7 +272,7 @@ func TestSchedulerShutdownTimeout(t *testing.T) {
 	checker := &fakeChecker{release: make(chan struct{})} // never released
 	cfg := testConfig()
 	cfg.ShutdownTimeout = 20 * time.Millisecond
-	s := New(store, checker, discard(), clock.System{}, cfg)
+	s := New(store, checker, newMetrics(), discard(), clock.System{}, cfg)
 	stop := start(t, s)
 	require.Eventually(t, func() bool { return checker.running.Load() == 1 }, 5*time.Second, time.Millisecond)
 
@@ -229,7 +286,7 @@ func TestSchedulerClaimError(t *testing.T) {
 	store := newFakeStore()
 	store.claimErr = errors.New("connection refused")
 	var logs bytes.Buffer
-	s := New(store, &fakeChecker{}, slog.New(slog.NewTextHandler(&logs, nil)), clock.System{}, testConfig())
+	s := New(store, &fakeChecker{}, newMetrics(), slog.New(slog.NewTextHandler(&logs, nil)), clock.System{}, testConfig())
 
 	stop := start(t, s)
 	require.Eventually(t, func() bool { store.mu.Lock(); defer store.mu.Unlock(); return len(store.limits) >= 2 }, time.Second, time.Millisecond)
@@ -244,7 +301,7 @@ func TestSchedulerDeletedMonitorIsNotAnError(t *testing.T) {
 	store := newFakeStore(domain.CheckTarget{MonitorID: uuid.New()})
 	store.saveErr = domain.ErrNotFound
 	var logs bytes.Buffer
-	s := New(store, &fakeChecker{}, slog.New(slog.NewTextHandler(&logs, nil)), clock.System{}, testConfig())
+	s := New(store, &fakeChecker{}, newMetrics(), slog.New(slog.NewTextHandler(&logs, nil)), clock.System{}, testConfig())
 
 	stop := start(t, s)
 	require.Eventually(t, func() bool { store.mu.Lock(); defer store.mu.Unlock(); return len(store.queue) == 0 }, time.Second, time.Millisecond)
@@ -257,7 +314,7 @@ func TestSchedulerDeletedMonitorIsNotAnError(t *testing.T) {
 func TestHeartbeatUsesClock(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	s := New(newFakeStore(), &fakeChecker{}, discard(), clock.NewFake(now), testConfig())
+	s := New(newFakeStore(), &fakeChecker{}, newMetrics(), discard(), clock.NewFake(now), testConfig())
 
 	s.beat()
 
@@ -288,7 +345,7 @@ func TestSchedulerLogsIncidents(t *testing.T) {
 			var logs syncBuffer
 			// The project logger adds the context attributes (monitor_id).
 			log := logger.New(&logs, logger.Options{Format: logger.FormatText, Level: slog.LevelInfo})
-			s := New(store, &fakeChecker{}, log, clock.System{}, testConfig())
+			s := New(store, &fakeChecker{}, newMetrics(), log, clock.System{}, testConfig())
 
 			stop := start(t, s)
 			require.Eventually(t, func() bool { return store.savedCount() == 1 }, 5*time.Second, time.Millisecond)

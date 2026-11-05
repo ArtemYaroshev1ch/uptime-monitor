@@ -9,9 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/artemyaroshev1ch/uptime-monitor/internal/observability"
+	"github.com/artemyaroshev1ch/uptime-monitor/internal/observability/obstest"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/platform/clock"
 )
 
@@ -42,7 +45,7 @@ func TestRunOnce(t *testing.T) {
 	t.Parallel()
 	store := &fakeStore{}
 	var logs bytes.Buffer
-	r := New(store, clock.NewFake(now), slog.New(slog.NewTextHandler(&logs, nil)),
+	r := New(store, observability.NewRetentionMetrics(prometheus.NewRegistry()), clock.NewFake(now), slog.New(slog.NewTextHandler(&logs, nil)),
 		Config{Keep: 30 * 24 * time.Hour, Interval: time.Hour, Batch: 1000})
 
 	r.RunOnce(t.Context())
@@ -57,7 +60,7 @@ func TestRunOnceError(t *testing.T) {
 	t.Parallel()
 	store := &fakeStore{err: errors.New("statement timeout")}
 	var logs bytes.Buffer
-	r := New(store, clock.NewFake(now), slog.New(slog.NewTextHandler(&logs, nil)),
+	r := New(store, observability.NewRetentionMetrics(prometheus.NewRegistry()), clock.NewFake(now), slog.New(slog.NewTextHandler(&logs, nil)),
 		Config{Keep: time.Hour, Interval: time.Hour, Batch: 10})
 
 	r.RunOnce(t.Context())
@@ -69,7 +72,7 @@ func TestRunOnceError(t *testing.T) {
 func TestRunRepeatsUntilCancelled(t *testing.T) {
 	t.Parallel()
 	store := &fakeStore{}
-	r := New(store, clock.NewFake(now), slog.New(slog.DiscardHandler),
+	r := New(store, observability.NewRetentionMetrics(prometheus.NewRegistry()), clock.NewFake(now), slog.New(slog.DiscardHandler),
 		Config{Keep: time.Hour, Interval: 5 * time.Millisecond, Batch: 10})
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -84,4 +87,24 @@ func TestRunRepeatsUntilCancelled(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return after cancellation")
 	}
+}
+
+func TestRunOnceMetrics(t *testing.T) {
+	t.Parallel()
+	store := &fakeStore{}
+	reg := prometheus.NewRegistry()
+	r := New(store, observability.NewRetentionMetrics(reg), clock.NewFake(now), slog.New(slog.DiscardHandler),
+		Config{Keep: time.Hour, Interval: time.Hour, Batch: 10})
+
+	assert.InDelta(t, 0, obstest.Value(t, reg, "uptime_retention_last_success_timestamp_seconds"), 0)
+	r.RunOnce(t.Context())
+	assert.InDelta(t, 42, obstest.Value(t, reg, "uptime_retention_deleted_rows_total"), 0)
+	assert.InDelta(t, float64(now.Unix()), obstest.Value(t, reg, "uptime_retention_last_success_timestamp_seconds"), 0)
+
+	// A failed run counts what it deleted but is not a success.
+	store.err = errors.New("statement timeout")
+	r.clock.(*clock.Fake).Advance(time.Hour)
+	r.RunOnce(t.Context())
+	assert.InDelta(t, 84, obstest.Value(t, reg, "uptime_retention_deleted_rows_total"), 0)
+	assert.InDelta(t, float64(now.Unix()), obstest.Value(t, reg, "uptime_retention_last_success_timestamp_seconds"), 0)
 }

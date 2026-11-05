@@ -57,7 +57,7 @@ func TestHandler(t *testing.T) {
 			t.Parallel()
 			rec := httptest.NewRecorder()
 
-			Handler(slog.New(slog.DiscardHandler), tt.checks...).
+			Handler(slog.New(slog.DiscardHandler), Options{Checks: tt.checks}).
 				ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, tt.path, http.NoBody))
 
 			assert.Equal(t, tt.wantStatus, rec.Code)
@@ -66,4 +66,36 @@ func TestHandler(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandlerOptionalEndpoints(t *testing.T) {
+	t.Parallel()
+	metrics := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("uptime_build_info 1\n"))
+	})
+	get := func(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, http.NoBody))
+		return rec
+	}
+
+	t.Run("enabled", func(t *testing.T) {
+		t.Parallel()
+		h := Handler(slog.New(slog.DiscardHandler), Options{Metrics: metrics, Pprof: true})
+
+		rec := get(t, h, "/metrics")
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, "uptime_build_info 1\n", rec.Body.String())
+		assert.Equal(t, http.StatusOK, get(t, h, "/debug/pprof/").Code)
+		assert.Equal(t, http.StatusOK, get(t, h, "/debug/pprof/goroutine?debug=1").Code)
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		t.Parallel()
+		h := Handler(slog.New(slog.DiscardHandler), Options{})
+
+		assert.Equal(t, http.StatusNotFound, get(t, h, "/metrics").Code)
+		assert.Equal(t, http.StatusNotFound, get(t, h, "/debug/pprof/").Code)
+	})
 }
