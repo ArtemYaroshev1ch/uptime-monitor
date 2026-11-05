@@ -7,7 +7,7 @@ import (
 )
 
 // ErrorKind classifies a failed check. The values are a closed list: they
-// are stored, returned by the API and become a metric label in Phase 7.
+// are stored, returned by the API and used as a metric label.
 type ErrorKind string
 
 // Error kinds. An empty ErrorKind means the check succeeded.

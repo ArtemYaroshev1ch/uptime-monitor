@@ -48,7 +48,10 @@ structured logs and graceful shutdown.
 - JSON logs in production, text logs in development.
 - Graceful shutdown on `SIGTERM`/Ctrl+C.
 - `-healthcheck` flag for container health checks without curl.
-- *Planned:* Prometheus metrics.
+- Prometheus metrics on internal ops ports (api `:9090`, worker `:9091`):
+  RED metrics of the API, check, scheduler and delivery SLIs, outbox and
+  connection pool state; catalog in [docs/metrics.md](docs/metrics.md).
+  Optional `pprof` on the API ops port.
 
 ## Quick start
 
@@ -103,11 +106,18 @@ curl "http://localhost:8080/api/v1/incidents?open=true" -H "Authorization: Beare
 # {"items":[{"id":"...","monitor_id":"...","monitor_name":"Example",
 #   "started_at":"...","resolved_at":null,"cause_kind":"timeout","duration_seconds":null}],"total":1}
 # Notifications: a webhook channel (the secret is shown only now), then a test.
-curl -X POST http://localhost:8080/api/v1/channels -H "Authorization: Bearer $TOKEN" \n  -d '{"type":"webhook","name":"ops","config":{"url":"https://hooks.example.com/uptime"}}'
+curl -X POST http://localhost:8080/api/v1/channels -H "Authorization: Bearer $TOKEN" \
+  -d '{"type":"webhook","name":"ops","config":{"url":"https://hooks.example.com/uptime"}}'
 # {"id":"...","type":"webhook","name":"ops","config":{"url":"...","secret":"K7QJ..."},...}
 curl -X POST http://localhost:8080/api/v1/channels/<id>/test -H "Authorization: Bearer $TOKEN"
 # {"delivered":true}
 curl -X DELETE http://localhost:8080/api/v1/monitors/<id> -H "Authorization: Bearer $TOKEN"
+
+# Metrics, on the ops ports only (make run-* binds them to 127.0.0.1)
+curl -s http://127.0.0.1:9090/metrics | grep '^uptime_http_requests_total'
+# uptime_http_requests_total{code="201",method="POST",route="/api/v1/monitors"} 1 ...
+curl -s http://127.0.0.1:9091/metrics | grep '^uptime_checks_total'
+# uptime_checks_total{error_kind="none",result="success"} 12 ...
 ```
 
 Errors look the same everywhere:
@@ -141,17 +151,21 @@ All configuration comes from environment variables. `make run-api` and
 | `TRUST_PROXY_HEADERS`   | rate-limit by `X-Forwarded-For` (behind a proxy only)   | `false` |
 | `MAX_MONITORS_PER_USER` | monitors one user may have                              | `20`    |
 | `ALLOW_PRIVATE_TARGETS` | allow private/loopback monitor URLs (**dev only**)      | `false` |
-| `OPS_ADDR`              | worker ops port (`/healthz`, `/readyz`), internal only  | `:9091` |
+| `OPS_ADDR`              | ops port, internal only (see [Operations](#operations)) | api `:9090`, worker `:9091` |
+| `PPROF_ENABLED`         | serve `/debug/pprof/` on the api ops port               | `false` |
 | `WORKER_CONCURRENCY`    | checks running at once in one worker                    | `20`    |
 | `SCHEDULER_BATCH_SIZE`  | monitors claimed per scheduler tick (1 s)               | `50`    |
 | `CHECKS_RETENTION_DAYS` | days check results are kept                             | `30`    |
 | `TELEGRAM_BOT_TOKEN`    | Telegram bot token (secret); empty disables Telegram    | empty   |
 
-`api` uses the variables up to `ALLOW_PRIVATE_TARGETS` (except `OPS_ADDR`
-and the worker settings) and `TELEGRAM_BOT_TOKEN` (for test notifications);
-`worker` uses the common ones (`APP_ENV`, `LOG_LEVEL`, `DATABASE_URL`,
-`DB_MAX_CONNS`, `SHUTDOWN_TIMEOUT`), `ALLOW_PRIVATE_TARGETS`, the worker
-settings and `TELEGRAM_BOT_TOKEN`.
+`api` uses the variables up to `PPROF_ENABLED` and `TELEGRAM_BOT_TOKEN`
+(for test notifications); `worker` uses the common ones (`APP_ENV`,
+`LOG_LEVEL`, `DATABASE_URL`, `DB_MAX_CONNS`, `SHUTDOWN_TIMEOUT`),
+`ALLOW_PRIVATE_TARGETS`, `OPS_ADDR`, the worker settings and
+`TELEGRAM_BOT_TOKEN`. Both processes read `OPS_ADDR` with different
+defaults; `make run-api` and `make run-worker` set it to `127.0.0.1:9090`
+and `127.0.0.1:9091` (override with `API_OPS_ADDR=...` / `WORKER_OPS_ADDR=...`
+on the make command line).
 
 Invalid values stop the process at startup with an error that lists every
 problem.
@@ -163,8 +177,11 @@ problem.
 | api `GET /healthz`       | liveness: the process serves HTTP; does not check dependencies       |
 | api `GET /readyz`        | readiness: 200 if PostgreSQL answers within 2 s, otherwise 503       |
 | api `GET /version`       | `{"version","commit","built_at"}` of the running build               |
+| api `:9090/metrics`      | Prometheus metrics of the API ([catalog](docs/metrics.md))           |
+| api `:9090/debug/pprof/` | Go profiler, only with `PPROF_ENABLED=true`                          |
 | worker `:9091/healthz`   | liveness of the worker                                               |
 | worker `:9091/readyz`    | readiness: PostgreSQL answers and the scheduler claimed work < 30 s ago |
+| worker `:9091/metrics`   | Prometheus metrics of the worker ([catalog](docs/metrics.md))        |
 | `api -healthcheck`       | probes `/healthz` on `HTTP_ADDR`, exit code 0 = healthy, 1 = not     |
 | `worker -healthcheck`    | probes `/healthz` on `OPS_ADDR`, exit code 0 = healthy, 1 = not      |
 | `api -version`, `worker -version` | print version, commit, build time and Go version            |
@@ -203,8 +220,15 @@ problem.
   work behind (at most one interval of delay for the checks it was running).
 - **Database outage:** `/readyz` returns 503 and the API keeps running; it
   serves again as soon as the database is back. `/healthz` stays 200.
-- *Planned:* ops port with `/metrics` (catalog in `docs/metrics.md`) and the
-  rollback procedure.
+- **Metrics:** the ops ports (`:9090` api, `:9091` worker) are internal:
+  never publish them. The public port does not serve `/metrics`. Labels
+  never carry IDs or URLs; per-monitor numbers are in the API
+  (`/monitors/{id}/stats`). Database-backed gauges (backlog, outbox, open
+  incidents, monitors) are refreshed by every worker every 15 s and are
+  the same on all replicas: aggregate them with `max`. With
+  `PPROF_ENABLED=true`: `go tool pprof http://127.0.0.1:9090/debug/pprof/profile?seconds=30`
+  (CPU) or `.../debug/pprof/heap` (memory).
+- *Planned:* the rollback procedure.
 
 ### Migrations
 
@@ -293,7 +317,7 @@ cmd/api/                  API binary
 cmd/migrate/              migration binary
 internal/config/          environment configuration and validation
 internal/httpapi/         router, handlers, JSON responses
-internal/observability/   build information (metrics later)
+internal/observability/   build information, Prometheus registry and metrics
 internal/platform/        logger, HTTP server, self health check, PostgreSQL
 migrations/               SQL migrations (embedded)
 docker-compose.yml        local PostgreSQL
@@ -311,7 +335,8 @@ The project builds natively on Windows without WSL:
 - The race detector needs a C compiler; without one, `make test` runs without
   `-race`. CI always runs with `-race`.
 - Listening on `:8080` triggers a Windows Firewall prompt on first run. Set
-  `HTTP_ADDR=127.0.0.1:8080` in `.env` to stay on loopback.
+  `HTTP_ADDR=127.0.0.1:8080` in `.env` to stay on loopback. `make run-*`
+  already binds the ops ports to `127.0.0.1`.
 - Docker Desktop must be running for `make up` and `make test-integration`.
 - `DATABASE_URL` uses `127.0.0.1`, not `localhost`: `localhost` resolves to
   `::1` first, where the container does not listen, and each connection waits
@@ -333,7 +358,7 @@ Deployment, monitoring stack, SLOs, alerts and runbooks live in the
 - [x] Phase 4: checks, scheduler, statistics
 - [x] Phase 5: incidents
 - [x] Phase 6: notifications and certificate warnings
-- [ ] Phase 7: observability
+- [x] Phase 7: observability
 - [ ] Phase 8: Docker
 - [ ] Phase 9: CI/CD
 - [ ] Phase 10: documentation and v1.0.0

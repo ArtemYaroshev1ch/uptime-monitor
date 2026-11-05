@@ -62,16 +62,22 @@ help: ## Show this help
 		/^##@/ { printf "\n%s\n", substr($$0, 5) } \
 		/^[a-zA-Z0-9_-]+:.*## / { printf "  %-18s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
+# api and worker share .env but need different ops ports, so OPS_ADDR is set
+# per target (it overrides .env). Loopback avoids the Windows Firewall prompt
+# and keeps the ops ports private. Override: make run-api API_OPS_ADDR=...
+API_OPS_ADDR    ?= 127.0.0.1:9090
+WORKER_OPS_ADDR ?= 127.0.0.1:9091
+
 # The binary is built and started instead of `go run`: its path stays the same
 # between runs (Windows Firewall asks once per executable path) and signals
 # such as Ctrl+C reach the server process directly.
 .PHONY: run-api
-run-api: build ## Build and run the API (loads .env if present)
-	@$(LOAD_ENV) ./$(BIN_DIR)/api$(GOEXE)
+run-api: build ## Build and run the API (loads .env if present; ops port 9090)
+	@$(LOAD_ENV) OPS_ADDR=$(API_OPS_ADDR) ./$(BIN_DIR)/api$(GOEXE)
 
 .PHONY: run-worker
-run-worker: build ## Build and run the worker (loads .env if present)
-	@$(LOAD_ENV) ./$(BIN_DIR)/worker$(GOEXE)
+run-worker: build ## Build and run the worker (loads .env if present; ops port 9091)
+	@$(LOAD_ENV) OPS_ADDR=$(WORKER_OPS_ADDR) ./$(BIN_DIR)/worker$(GOEXE)
 
 .PHONY: migrate-up
 migrate-up: build ## Apply all pending migrations (loads .env)
