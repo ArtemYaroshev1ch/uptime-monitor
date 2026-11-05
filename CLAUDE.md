@@ -91,17 +91,20 @@ This is the operations API. Do not change it without updating `uptime-infra`.
 
 ## Make targets
 
-Run `make help` for the current list. Implemented now: `help`, `run-api`,
+Run `make help` for the current list: `help`, `run-api`, `run-worker`,
 `migrate-up`, `migrate-down`, `migrate-status`, `migrate-create name=...`,
-`build`, `clean`, `up`, `down`, `logs` (compose: PostgreSQL only so far), `run-worker`,
-`test`, `test-integration` (needs Docker), `cover`, `lint`, `fmt`, `tidy`,
-`tools`. Planned by later phases: `docker-build`, `smoke`.
+`build`, `clean`, `up` (whole compose stack, built), `db` (PostgreSQL
+only), `down`, `logs`, `docker-build`, `smoke`, `test`, `test-integration`
+(needs Docker), `cover`, `lint`, `fmt`, `tidy`, `tools`.
 
 - `make lint test` — the phase gate.
 - golangci-lint is pinned in the Makefile (`GOLANGCI_LINT_VERSION`, keep in
   sync with `.github/workflows/ci.yml`) and built into `bin/tools/`.
 - Build metadata (`version`, `commit`, `builtAt`) is injected into
   `package main` via `-ldflags`.
+- Command code lives in `internal/app/{api,worker,migrate}`; `cmd/*` are
+  thin mains. The image ships `cmd/uptime-monitor` (all-in-one) with
+  `/app/api|worker|migrate` as symlinks (decision 039).
 
 ## Environment
 
@@ -125,5 +128,9 @@ Consequences for code and tooling:
   bind `127.0.0.1:<port>`.
 - Connection refused on loopback takes ~2 s on Windows; bound such tests with
   a context timeout.
+- Git Bash rewrites Unix-looking arguments (`/app/worker` →
+  `C:/Program Files/Git/app/worker`): use `MSYS_NO_PATHCONV=1` for
+  `docker run ... /app/...`.
+- `docker compose config` prints `.env` with secrets: use `--quiet`.
 - Docker-dependent work (compose, testcontainers) must also run in CI on Linux;
   do not assume Linux-only paths or tools in Go code or tests.

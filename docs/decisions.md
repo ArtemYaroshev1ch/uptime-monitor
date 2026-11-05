@@ -757,3 +757,78 @@ CPU profile longer than the write timeout, and the default profile is 30 s.
 leaked token or misconfigured proxy exposes internals; a separate port is
 private by network. Separate variables (`API_OPS_ADDR`, `WORKER_OPS_ADDR`):
 the contract with `uptime-infra` names one `OPS_ADDR` per process.
+
+## 039. One all-in-one binary in the image, linked as api, worker and migrate
+
+*2026-11-05, Phase 8*
+
+**Context.** The contract asks for one image with `/app/api`,
+`/app/worker` and `/app/migrate`, and PROMPT.md for an image under 30 MB.
+Three static binaries are 45 MB (stripped, linux/amd64): each carries the
+same pgx, chi, Prometheus client and checker code.
+
+**Decision.** The code of each command moves to
+`internal/app/{api,worker,migrate}` (`Run(ctx, args, info, stdout)`).
+`cmd/uptime-monitor` contains all three and picks one by the name it was
+started as (`/app/worker` is a symbolic link to it) or by its first
+argument (`uptime-monitor migrate up`); without a command it prints usage
+and exits with 2. The binary is 18 MB, the image about 25 MB unpacked
+(8 MB compressed). `cmd/api`, `cmd/worker` and `cmd/migrate` stay as thin
+mains for local runs, so `make run-*` and the binary names do not change.
+The paths of the contract are unchanged for `uptime-infra`.
+
+**Alternatives.** Three binaries and a 47 MB image: misses the size goal.
+UPX compression: an extra tool, slower start, and packed binaries are
+often flagged by scanners. Hard links: the same size, but symbolic links
+show what they point to (`ls -l`).
+
+## 040. Image: distroless/static nonroot, base images pinned by digest
+
+*2026-11-05, Phase 8*
+
+**Decision.** The build stage is `golang:1.27.3-alpine3.24`, run on
+`$BUILDPLATFORM` and cross-compiling for `TARGETOS/TARGETARCH`, so a
+multi-arch build (Phase 9) needs no emulation. The runtime is
+`gcr.io/distroless/static-debian13:nonroot`: CA certificates (the checker
+and the senders need them), tzdata, `/etc/passwd`, nothing else. Both are
+pinned by tag and digest: the tag tells a reader the version, the digest
+makes the build reproducible. `USER 65532:65532` is numeric, so
+"runs as non-root" can be checked without reading `/etc/passwd`. Version,
+commit and build time come in as build args and go into `-ldflags` and OCI
+labels. Module and build caches are BuildKit cache mounts. No
+`HEALTHCHECK` in the image: it differs per command, so compose (and
+`uptime-infra`) define it with `-healthcheck`. `CMD` defaults to the API.
+
+**Alternatives.** `scratch`: no CA certificates or tzdata without copying
+them by hand. Alpine runtime: a shell and a package manager to patch for
+no benefit.
+
+## 041. Compose stack: example secret, ports on loopback, hardened containers
+
+*2026-11-05, Phase 8*
+
+**Context.** The definition of done is `cp .env.example .env && docker
+compose up --build` on a clean machine, but `JWT_SECRET` has no default
+and the API refuses to start without one.
+
+**Decision.** `.env.example` sets `JWT_SECRET` to a public value that
+says what it is (`config.ExampleJWTSecret`); the API rejects exactly that
+value when `APP_ENV=prod`, and a test keeps `.env.example` and the
+constant in sync. Compose reads `.env` for the application settings and
+sets what only makes sense inside its network itself (`HTTP_ADDR`,
+`OPS_ADDR`, `DATABASE_URL` with host `postgres`), so the same `.env` also
+works for `make run-*` on the host. Start order: postgres healthy, migrate
+completed successfully, then api and worker; a failed migration starts
+nothing new. All ports, ops ports included, are published on 127.0.0.1
+only: for local `curl` and `make smoke`, never on the network; production
+compose files in `uptime-infra` do not publish the ops ports at all. The
+application containers run with a read-only root filesystem, no Linux
+capabilities and `no-new-privileges`. `make up` now starts the whole stack;
+`make db` starts PostgreSQL alone for running the binaries on the host.
+`scripts/smoke.sh` is POSIX sh with curl only (no jq), so it runs in CI
+and from Git for Windows.
+
+**Alternatives.** An empty `JWT_SECRET` with an error telling the user to
+fill it in: fails the "works as is" requirement. A secret generated at
+first start: would change on every restart and log everybody out, or need
+a volume for one string.
