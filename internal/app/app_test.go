@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"io"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,7 +26,9 @@ func TestSelect(t *testing.T) {
 		wantErr  string
 	}{
 		{name: "symlink", argv0: "/app/worker", args: []string{"-healthcheck"}, wantName: "worker", wantArgs: []string{"-healthcheck"}},
-		{name: "windows binary", argv0: `C:\bin\api.exe`, args: nil, wantName: "api", wantArgs: nil},
+		// The path separator is the platform's own: tests run on Windows
+		// locally and on Linux in CI.
+		{name: "exe suffix", argv0: filepath.Join("bin", "api.exe"), args: nil, wantName: "api", wantArgs: nil},
 		{name: "subcommand", argv0: "/app/uptime-monitor", args: []string{"migrate", "up"}, wantName: "migrate", wantArgs: []string{"up"}},
 		{name: "relative path", argv0: "./uptime-monitor", args: []string{"api", "-version"}, wantName: "api", wantArgs: []string{"-version"}},
 		{name: "no command", argv0: "/app/uptime-monitor", wantErr: "usage: uptime-monitor <api|migrate|worker> [flags]"},
