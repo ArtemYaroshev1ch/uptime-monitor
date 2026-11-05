@@ -96,7 +96,7 @@ Run `make help` for the current list: `help`, `run-api`, `run-worker`,
 `build`, `clean`, `up` (whole compose stack, built), `db` (PostgreSQL
 only), `down`, `logs`, `docker-build`, `smoke`, `test`, `test-integration`
 (needs Docker), `cover`, `cover-check`, `vuln`, `lint`, `lint-ci`,
-`lint-docker`, `scan`, `changelog`, `fmt`, `tidy`, `tools`. CI calls these
+`lint-docker`, `secrets`, `scan`, `changelog`, `fmt`, `tidy`, `tools`. CI calls these
 same targets (`docs/ci-cd.md`).
 
 - `make lint test` — the phase gate.

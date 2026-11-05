@@ -59,6 +59,7 @@ GOVULNCHECK_VERSION := v1.9.0
 ACTIONLINT_VERSION  := v1.7.12
 HADOLINT_IMAGE      := hadolint/hadolint:v2.15.1
 TRIVY_IMAGE         := aquasec/trivy:0.76.2
+GITLEAKS_IMAGE      := ghcr.io/gitleaks/gitleaks:v8.30.1
 
 # Image that docker-build builds and scan checks.
 IMAGE ?= uptime-monitor:$(VERSION)
@@ -209,6 +210,14 @@ vuln: ## Check dependencies and the Go toolchain for known vulnerabilities (govu
 .PHONY: lint-ci
 lint-ci: ## Lint the GitHub Actions workflows (actionlint)
 	$(GO) run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
+
+# Scans the whole git history, not only the current files: a secret that was
+# committed and later deleted is still in the history. Known false positives
+# are listed in .gitleaksignore.
+.PHONY: secrets
+secrets: ## Look for secrets in the git history (gitleaks)
+	MSYS_NO_PATHCONV=1 docker run --rm -v "$(CURDIR):/repo" $(GITLEAKS_IMAGE) \
+		git /repo --no-banner --redact --gitleaks-ignore-path /repo/.gitleaksignore
 
 .PHONY: lint
 lint: $(GOLANGCI_LINT) ## Run golangci-lint

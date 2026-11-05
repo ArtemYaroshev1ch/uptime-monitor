@@ -101,6 +101,7 @@ func TestRouter(t *testing.T) {
 			rec := httptest.NewRecorder()
 
 			newTestRouter(t, tt.db).ServeHTTP(rec, req)
+			checkResponse(t, tt.method, tt.path, rec)
 
 			assert.Equal(t, tt.wantStatus, rec.Code)
 			if tt.wantBody != "" {

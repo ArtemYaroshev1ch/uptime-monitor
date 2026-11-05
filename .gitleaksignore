@@ -1,0 +1,13 @@
+# Findings of gitleaks (make secrets) that are not secrets. One fingerprint
+# per line: commit:file:rule:line. Add a line only after checking the value
+# by hand; a real secret must be revoked, not ignored.
+
+# The doc comment of the Tokens type in internal/auth.
+6ee8e60888321dee11e5428cabcf12e084cd5390:internal/auth/token.go:generic-api-key:22
+# Test value of JWT_SECRET ("0123456789abcdef" twice).
+8f8f4cd489ccdccb6b5c33375382681342bb2ef9:cmd/api/main_test.go:generic-api-key:41
+967c93e582d3ccdbdff90950cff8edb1f3a3aacb:internal/config/config_test.go:generic-api-key:15
+# Made-up webhook secret in an example response of the API description.
+db29cf50ac0556a331abfd3fdc336c5cf3e4d948:api/openapi.yaml:generic-api-key:455
+# The first version of this file quoted that doc comment.
+d20136c82f12401b375c9cfaf8fe05691deb780e:.gitleaksignore:generic-api-key:5

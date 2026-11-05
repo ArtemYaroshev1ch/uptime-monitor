@@ -12,7 +12,7 @@ of a release. Jobs run in parallel.
 | Job | What it checks | Locally |
 |---|---|---|
 | Build | all binaries compile | `make build` |
-| Lint | golangci-lint; actionlint on the workflows; hadolint on the Dockerfile | `make lint lint-ci lint-docker` |
+| Lint | golangci-lint; actionlint on the workflows; hadolint on the Dockerfile; gitleaks on the whole git history (false positives in `.gitleaksignore`) | `make lint lint-ci lint-docker secrets` |
 | Vulnerabilities | govulncheck: known vulnerabilities in code the module calls, Go standard library included | `make vuln` |
 | Test | unit tests with `-race` and coverage; `internal/service` and `internal/checker` at least 70 % | `make cover cover-check` |
 | Integration tests | unit + integration tests against PostgreSQL in Docker (testcontainers), with `-race` and coverage | `make test-integration` |

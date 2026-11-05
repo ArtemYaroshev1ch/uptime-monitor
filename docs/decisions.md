@@ -2,6 +2,57 @@
 
 Lightweight decision records: context → decision → alternatives.
 Newest entries go at the bottom.
+Numbers are stable: other documents refer to decisions by number.
+
+**Contents**
+
+- [001. LF line endings for all text files](#001-lf-line-endings-for-all-text-files)
+- [002. Makefile runs on native Windows through sh from Git for Windows](#002-makefile-runs-on-native-windows-through-sh-from-git-for-windows)
+- [003. golangci-lint is installed by `go install` into `bin/tools`](#003-golangci-lint-is-installed-by-go-install-into-bintools)
+- [004. Repository structure and configuration grow phase by phase](#004-repository-structure-and-configuration-grow-phase-by-phase)
+- [005. Build metadata is linked into package main](#005-build-metadata-is-linked-into-package-main)
+- [006. Configuration parsing with caarlos0/env](#006-configuration-parsing-with-caarlos0env)
+- [007. The API starts without a database; readiness reports it](#007-the-api-starts-without-a-database-readiness-reports-it)
+- [008. Migrations: goose Provider, embedded SQL, advisory lock](#008-migrations-goose-provider-embedded-sql-advisory-lock)
+- [009. Connection pool metrics come with the metrics registry (Phase 7)](#009-connection-pool-metrics-come-with-the-metrics-registry-phase-7)
+- [010. Integration tests: testcontainers, build tag, one container per test](#010-integration-tests-testcontainers-build-tag-one-container-per-test)
+- [011. Access tokens: HS256 JWT via golang-jwt, no refresh tokens](#011-access-tokens-hs256-jwt-via-golang-jwt-no-refresh-tokens)
+- [012. Emails are stored lowercase](#012-emails-are-stored-lowercase)
+- [013. Auth rate limit: in memory, per client IP, optional proxy header](#013-auth-rate-limit-in-memory-per-client-ip-optional-proxy-header)
+- [014. Request decoding: unknown fields rejected, oversized body is a 400](#014-request-decoding-unknown-fields-rejected-oversized-body-is-a-400)
+- [015. Request ID from the client is reused if it is safe](#015-request-id-from-the-client-is-reused-if-it-is-safe)
+- [016. Monitor limit: enforced in one transaction under a user row lock](#016-monitor-limit-enforced-in-one-transaction-under-a-user-row-lock)
+- [017. PATCH semantics: absent keeps, null clears, create is a patch of defaults](#017-patch-semantics-absent-keeps-null-clears-create-is-a-patch-of-defaults)
+- [018. Rescheduling on update](#018-rescheduling-on-update)
+- [019. Syntactic SSRF rules for monitor URLs](#019-syntactic-ssrf-rules-for-monitor-urls)
+- [020. Scheduler: claim only what fits in the pool, plan from now()](#020-scheduler-claim-only-what-fits-in-the-pool-plan-from-now)
+- [021. Check timings: what exactly is measured](#021-check-timings-what-exactly-is-measured)
+- [022. Monitor status and statistics rules](#022-monitor-status-and-statistics-rules)
+- [023. Worker pool size and retention batches](#023-worker-pool-size-and-retention-batches)
+- [024. Metrics of the worker come with the registry (Phase 7)](#024-metrics-of-the-worker-come-with-the-registry-phase-7)
+- [025. Incidents: a pure policy, applied under the monitor row lock](#025-incidents-a-pure-policy-applied-under-the-monitor-row-lock)
+- [026. Incident times](#026-incident-times)
+- [027. Notification outbox: lease claims, at-least-once, content rendered at send time](#027-notification-outbox-lease-claims-at-least-once-content-rendered-at-send-time)
+- [028. Retries: exponential backoff, five attempts, permanent errors fail at once](#028-retries-exponential-backoff-five-attempts-permanent-errors-fail-at-once)
+- [029. Webhooks: server-generated secret, HMAC over the raw body, no redirects](#029-webhooks-server-generated-secret-hmac-over-the-raw-body-no-redirects)
+- [030. Test notifications are sent synchronously and report the outcome in a 200](#030-test-notifications-are-sent-synchronously-and-report-the-outcome-in-a-200)
+- [031. Channel limit and fan-out](#031-channel-limit-and-fan-out)
+- [032. Certwatch: one statement, deduplicated by value](#032-certwatch-one-statement-deduplicated-by-value)
+- [033. Notification metrics come with the registry (Phase 7); outbox cleanup later](#033-notification-metrics-come-with-the-registry-phase-7-outbox-cleanup-later)
+- [034. Metrics: one injected registry per process, metric types in `observability`](#034-metrics-one-injected-registry-per-process-metric-types-in-observability)
+- [035. HTTP metrics: probes excluded, route templates only, Logging outside Recover](#035-http-metrics-probes-excluded-route-templates-only-logging-outside-recover)
+- [036. Database-backed gauges: refreshed by the worker every 15 s](#036-database-backed-gauges-refreshed-by-the-worker-every-15-s)
+- [037. Connection pool metrics: gauges for state, counters for totals](#037-connection-pool-metrics-gauges-for-state-counters-for-totals)
+- [038. Ops ports](#038-ops-ports)
+- [039. One all-in-one binary in the image, linked as api, worker and migrate](#039-one-all-in-one-binary-in-the-image-linked-as-api-worker-and-migrate)
+- [040. Image: distroless/static nonroot, base images pinned by digest](#040-image-distrolessstatic-nonroot-base-images-pinned-by-digest)
+- [041. Compose stack: example secret, ports on loopback, hardened containers](#041-compose-stack-example-secret-ports-on-loopback-hardened-containers)
+- [042. GitHub Actions pinned by commit SHA](#042-github-actions-pinned-by-commit-sha)
+- [043. Go toolchain pinned in go.mod; CI runs the make targets](#043-go-toolchain-pinned-in-gomod-ci-runs-the-make-targets)
+- [044. trivy fails on fixable HIGH and CRITICAL vulnerabilities](#044-trivy-fails-on-fixable-high-and-critical-vulnerabilities)
+- [045. Releases: tag on main, CI first, X.Y.Z and sha tags, no latest](#045-releases-tag-on-main-ci-first-xyz-and-sha-tags-no-latest)
+- [046. No CORS middleware](#046-no-cors-middleware)
+- [047. Documentation contracts are tests](#047-documentation-contracts-are-tests)
 
 ## 001. LF line endings for all text files
 
@@ -915,3 +966,47 @@ backs `make changelog`. Tags with a suffix become pre-releases.
 not commits, and not available locally. `latest` for convenience: a deploy
 using it changes when someone tags, not when the deployment changes.
 Releasing from any branch: publishes unreviewed code.
+
+## 046. No CORS middleware
+
+*2026-11-05, Phase 10*
+
+**Context.** PROMPT.md lists CORS in the middleware chain of the API, but
+there is no browser client: the API is used by `curl`, scripts and other
+services, none of which need CORS headers.
+
+**Decision.** No CORS middleware. Without `Access-Control-Allow-Origin`,
+browsers do not let other sites read the API's responses, which is the
+safest default for an API that answers with tokens and user data. A web
+frontend would bring a `CORS_ALLOWED_ORIGINS` setting (explicit origins,
+never `*` together with credentials) as one more middleware after
+`BodyLimit`.
+
+**Alternatives.** `Access-Control-Allow-Origin: *`: any site could call
+the API from a visitor's browser. A configurable allowlist now: a setting
+and code nobody uses yet.
+
+## 047. Documentation contracts are tests
+
+*2026-11-05, Phase 10*
+
+**Context.** `api/openapi.yaml` and `docs/metrics.md` are written by hand
+and are contracts: clients rely on the first, dashboards and alerts in
+`uptime-infra` on the second. Hand-written documents drift from the code.
+
+**Decision.** Both are checked by tests. `internal/httpapi/openapi_test.go`
+compares the chi routes with the operations of `openapi.yaml`, validates
+every response of every HTTP test (status code documented, body matches the
+schema, no undocumented fields, uuid and date-time formats) and, after a
+full run, fails if an operation was never called. The validator supports
+only the JSON Schema keywords the document uses and fails on any other, so
+it cannot silently skip a rule. `TestCatalogMatchesDocs` compares the
+tables of `docs/metrics.md` with the metrics the processes expose: names,
+types and label names. The YAML parser `go.yaml.in/yaml/v3` (already in the
+module graph through the Prometheus client) is used by tests only.
+
+**Alternatives.** Generating the document from code (annotations,
+`swaggo`): the document becomes as good as the annotations, and a generator
+adds a build step. A full OpenAPI validator library (`kin-openapi`): more
+complete, but a large dependency for the subset the document uses. Review
+by hand: easy to forget in the change that breaks the contract.
