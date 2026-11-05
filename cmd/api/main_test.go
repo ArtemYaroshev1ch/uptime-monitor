@@ -34,6 +34,7 @@ func setEnv(t *testing.T, kv map[string]string) {
 		"APP_ENV":          "prod",
 		"LOG_LEVEL":        "info",
 		"HTTP_ADDR":        "127.0.0.1:0",
+		"OPS_ADDR":         "127.0.0.1:0",
 		"SHUTDOWN_TIMEOUT": "5s",
 		// Nothing listens on port 1. The pool connects lazily, so the server
 		// starts anyway; only /readyz would notice.
@@ -98,10 +99,10 @@ func TestRunHealthcheck(t *testing.T) {
 	}
 }
 
-// TestRunServesUntilCancelled starts the real server on a free port, calls
-// /healthz and then stops it the way a SIGTERM would: by cancelling ctx.
+// TestRunServesUntilCancelled starts the real servers on free ports, calls
+// them and then stops them the way a SIGTERM would: by cancelling ctx.
 func TestRunServesUntilCancelled(t *testing.T) {
-	setEnv(t, nil)
+	setEnv(t, map[string]string{"PPROF_ENABLED": "true"})
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
@@ -113,19 +114,34 @@ func TestRunServesUntilCancelled(t *testing.T) {
 		done <- err
 	}()
 
-	addr := waitForListenAddr(t, logs)
+	addrs := waitForListenAddrs(t, logs, "public", "ops")
 	go func() { _, _ = io.Copy(io.Discard, logs) }() // keep the pipe flowing
+	public, opsPort := "http://"+addrs["public"], "http://"+addrs["ops"]
 
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/healthz", http.NoBody)
-	require.NoError(t, err)
-	// No keep-alive, so no spare connection delays the shutdown below (see
-	// the same client in cmd/worker/main_test.go).
-	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
-	resp, err := client.Do(req)
-	require.NoError(t, err)
-	_, _ = io.Copy(io.Discard, resp.Body)
-	require.NoError(t, resp.Body.Close())
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	code, _ := fetch(t, public+"/healthz")
+	assert.Equal(t, http.StatusOK, code)
+	code, _ = fetch(t, public+"/version")
+	assert.Equal(t, http.StatusOK, code)
+	code, _ = fetch(t, public+"/metrics")
+	assert.Equal(t, http.StatusNotFound, code, "metrics are never served on the public port")
+	code, _ = fetch(t, public+"/debug/pprof/")
+	assert.Equal(t, http.StatusNotFound, code, "pprof is never served on the public port")
+
+	code, body := fetch(t, opsPort+"/metrics")
+	assert.Equal(t, http.StatusOK, code)
+	for _, name := range []string{
+		"uptime_build_info", "uptime_http_requests_total", "uptime_http_request_duration_seconds",
+		"uptime_http_requests_in_flight", "uptime_db_pool_acquired_connections", "uptime_db_pool_idle_connections",
+		"uptime_db_pool_total_connections", "uptime_db_pool_max_connections", "uptime_db_pool_acquire_wait_seconds_total",
+		"go_goroutines", "process_cpu_seconds_total",
+	} {
+		assert.Contains(t, body, "\n# TYPE "+name+" ", "metric %s", name)
+	}
+	assert.Contains(t, body, `uptime_http_requests_total{code="200",method="GET",route="/version"} 1`)
+	assert.Contains(t, body, `uptime_http_requests_total{code="404",method="GET",route="unmatched"} 2`)
+	assert.NotContains(t, body, `route="/healthz"`)
+	code, _ = fetch(t, opsPort+"/debug/pprof/")
+	assert.Equal(t, http.StatusOK, code, "PPROF_ENABLED=true")
 
 	cancel()
 	select {
@@ -136,20 +152,45 @@ func TestRunServesUntilCancelled(t *testing.T) {
 	}
 }
 
-// waitForListenAddr reads JSON log lines until the server reports its address.
-func waitForListenAddr(t *testing.T, logs io.Reader) string {
+// fetch returns the status and body of GET url.
+func fetch(t *testing.T, url string) (int, string) {
 	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, http.NoBody)
+	require.NoError(t, err)
+	// No keep-alive, so no spare connection delays the shutdown (see the
+	// same client in cmd/worker/main_test.go).
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	return resp.StatusCode, string(body)
+}
+
+// waitForListenAddrs reads JSON log lines until every named server reports
+// its address.
+func waitForListenAddrs(t *testing.T, logs io.Reader, servers ...string) map[string]string {
+	t.Helper()
+	addrs := map[string]string{}
 	scanner := bufio.NewScanner(logs)
 	for scanner.Scan() {
 		var record struct {
-			Msg  string `json:"msg"`
-			Addr string `json:"addr"`
+			Msg    string `json:"msg"`
+			Server string `json:"server"`
+			Addr   string `json:"addr"`
 		}
 		require.NoError(t, json.Unmarshal(scanner.Bytes(), &record), "log line: %s", scanner.Text())
 		if record.Msg == "http server listening" {
-			return record.Addr
+			addrs[record.Server] = record.Addr
+		}
+		if len(addrs) == len(servers) {
+			for _, s := range servers {
+				require.Contains(t, addrs, s)
+			}
+			return addrs
 		}
 	}
-	t.Fatalf("server exited before listening: %v", scanner.Err())
-	return ""
+	t.Fatalf("api exited before listening: %v", scanner.Err())
+	return nil
 }

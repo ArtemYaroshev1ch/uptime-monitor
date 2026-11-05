@@ -21,6 +21,8 @@ type Deps struct {
 	DB    handler.Pinger
 	Log   *slog.Logger
 	Clock clock.Clock
+	// Metrics records the HTTP metrics of the public API.
+	Metrics *observability.HTTPMetrics
 
 	Auth      handler.AuthService
 	Monitors  handler.MonitorService
@@ -38,14 +40,16 @@ type Deps struct {
 func NewRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
 
-	// Order matters. RequestID comes first, so everything after it logs the
-	// ID. Recover sits outside Logging, so a panic is still access-logged
-	// (as a 500) once Recover has written the response. The metrics
-	// middleware (Phase 7) goes between Recover and Logging.
+	// Order matters; the first one is the outermost. RequestID comes first,
+	// so everything after it has the ID. Metrics wraps the rest, so it times
+	// the whole request and sees the final status. Logging sits outside
+	// Recover: a panic becomes a 500 in Recover, which Logging and Metrics
+	// then record like any other response.
 	r.Use(
 		middleware.RequestID,
-		middleware.Recover(d.Log),
+		middleware.Metrics(d.Metrics, d.Clock),
 		middleware.Logging(d.Log, d.Clock),
+		middleware.Recover(d.Log),
 		middleware.BodyLimit(middleware.MaxBodyBytes),
 	)
 	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {

@@ -3,10 +3,12 @@ package middleware
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 
+	"github.com/artemyaroshev1ch/uptime-monitor/internal/observability"
 	"github.com/artemyaroshev1ch/uptime-monitor/internal/platform/clock"
 )
 
@@ -56,11 +58,16 @@ func Logging(log *slog.Logger, clk clock.Clock) func(http.Handler) http.Handler 
 
 // routePattern returns the chi route template ("/api/v1/monitors/{id}"),
 // which groups requests by endpoint, or "unmatched" for unknown paths.
+//
+// An unknown path under a sub-router (/api/v1/nope) reaches chi's NotFound
+// with the sub-router's mount pattern "/api/v1/*". The API registers no
+// wildcard routes of its own, so a pattern ending in "/*" always means no
+// route matched.
 func routePattern(r *http.Request) string {
 	if rctx := chi.RouteContext(r.Context()); rctx != nil {
-		if p := rctx.RoutePattern(); p != "" {
+		if p := rctx.RoutePattern(); p != "" && !strings.HasSuffix(p, "/*") {
 			return p
 		}
 	}
-	return "unmatched"
+	return observability.RouteUnmatched
 }

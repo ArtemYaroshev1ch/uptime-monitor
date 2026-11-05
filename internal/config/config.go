@@ -67,6 +67,11 @@ type API struct {
 	Notify Notify
 
 	HTTPAddr string `env:"HTTP_ADDR" envDefault:":8080"`
+	// OpsAddr serves /metrics (and pprof). It must not be published outside
+	// the host network.
+	OpsAddr string `env:"OPS_ADDR" envDefault:":9090"`
+	// PprofEnabled serves the Go profiler on the ops port.
+	PprofEnabled bool `env:"PPROF_ENABLED" envDefault:"false"`
 	// TrustProxyHeaders makes the API take the client IP (for rate limiting)
 	// from X-Forwarded-For. Enable it only behind a reverse proxy that sets
 	// that header; otherwise clients can spoof their IP and dodge the limit.
@@ -111,8 +116,8 @@ type Worker struct {
 	DB     Database
 	Notify Notify
 
-	// OpsAddr serves /healthz and /readyz (and /metrics from Phase 7). It
-	// must not be published outside the host network.
+	// OpsAddr serves /healthz, /readyz and /metrics. It must not be
+	// published outside the host network.
 	OpsAddr string `env:"OPS_ADDR" envDefault:":9091"`
 	// Concurrency is the number of checks running at once.
 	Concurrency int `env:"WORKER_CONCURRENCY" envDefault:"20"`
@@ -213,6 +218,9 @@ func (c API) validate() error {
 	}
 	if _, _, err := net.SplitHostPort(c.HTTPAddr); err != nil {
 		errs = append(errs, fmt.Errorf("HTTP_ADDR must be host:port, got %q: %w", c.HTTPAddr, err))
+	}
+	if _, _, err := net.SplitHostPort(c.OpsAddr); err != nil {
+		errs = append(errs, fmt.Errorf("OPS_ADDR must be host:port, got %q: %w", c.OpsAddr, err))
 	}
 	return errors.Join(errs...)
 }
