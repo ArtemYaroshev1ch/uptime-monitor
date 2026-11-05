@@ -95,7 +95,9 @@ Run `make help` for the current list: `help`, `run-api`, `run-worker`,
 `migrate-up`, `migrate-down`, `migrate-status`, `migrate-create name=...`,
 `build`, `clean`, `up` (whole compose stack, built), `db` (PostgreSQL
 only), `down`, `logs`, `docker-build`, `smoke`, `test`, `test-integration`
-(needs Docker), `cover`, `lint`, `fmt`, `tidy`, `tools`.
+(needs Docker), `cover`, `cover-check`, `vuln`, `lint`, `lint-ci`,
+`lint-docker`, `scan`, `changelog`, `fmt`, `tidy`, `tools`. CI calls these
+same targets (`docs/ci-cd.md`).
 
 - `make lint test` — the phase gate.
 - golangci-lint is pinned in the Makefile (`GOLANGCI_LINT_VERSION`, keep in
@@ -109,7 +111,8 @@ only), `down`, `logs`, `docker-build`, `smoke`, `test`, `test-integration`
 ## Environment
 
 - Windows 11, native, **no WSL**. Project at `D:\projects\uptime-monitor`.
-- Go 1.27 (`go.mod`: `go 1.27.0`), module
+- Go 1.27 (`go.mod`: `go 1.27.0`, `toolchain go1.27.3`, same as the
+  Dockerfile; bump both together), module
   `github.com/artemyaroshev1ch/uptime-monitor`.
 - Git for Windows; `C:\Program Files\Git\bin` is in PATH, `usr\bin` is not.
   `core.autocrlf=true` system-wide, so `.gitattributes` forces LF for all text.

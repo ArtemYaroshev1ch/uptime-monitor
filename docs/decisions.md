@@ -832,3 +832,86 @@ and from Git for Windows.
 fill it in: fails the "works as is" requirement. A secret generated at
 first start: would change on every restart and log everybody out, or need
 a volume for one string.
+
+## 042. GitHub Actions pinned by commit SHA
+
+*2026-11-05, Phase 9*
+
+**Context.** A workflow runs third-party code with access to the
+repository token and, in a release, to `packages: write`. A tag such as
+`v7` can be moved by whoever controls the action's repository, and
+compromised action tags have been used to steal CI secrets.
+
+**Decision.** Every action is referenced by its full commit SHA with the
+release in a comment (`actions/checkout@3d3c… # v7.0.1`). Dependabot
+updates the SHA and the comment together. Only well-known actions are used
+(`actions/*`, `docker/*`, golangci-lint); the GitHub Release is created
+with the preinstalled `gh` CLI instead of a third-party action, and
+hadolint and trivy run as pinned Docker images through make targets.
+
+**Alternatives.** Major tags (`@v7`): fewer update PRs, but the code that
+runs can change without a commit here. Vendoring actions: the most control,
+but every update is manual.
+
+## 043. Go toolchain pinned in go.mod; CI runs the make targets
+
+*2026-11-05, Phase 9*
+
+**Context.** `go.mod` said `go 1.27.0`, so CI and local builds used Go
+1.27.0 while the image was built with `golang:1.27.3`. govulncheck reported
+ten standard library vulnerabilities fixed in 1.27.2/1.27.3: the tests and
+the scans checked a different Go than production runs.
+
+**Decision.** `go.mod` gets `toolchain go1.27.3`: `actions/setup-go`
+installs it, and a local `go` downloads it automatically, so tests, scans
+and the image use one Go version; the Dockerfile and this line are bumped
+together. Each CI job calls a make target (`cover-check`, `vuln`,
+`lint-ci`, `lint-docker`, `scan`, `smoke`), so a red job is reproduced
+locally with the same command. Go tools run with `go run pkg@version`
+(nothing added to `go.mod`); hadolint and trivy run as pinned images, so
+locally only Docker is needed.
+
+**Alternatives.** `go-version: 1.27.x` in CI: always the newest patch, but
+three places to keep in sync and unpinned local builds. Marketplace actions
+for govulncheck, hadolint and trivy: no local equivalent of the CI step.
+
+## 044. trivy fails on fixable HIGH and CRITICAL vulnerabilities
+
+*2026-11-05, Phase 9*
+
+**Context.** The image must not ship known serious vulnerabilities. Some
+reported vulnerabilities have no fixed version yet; failing on them would
+block every PR with nothing to do about it.
+
+**Decision.** `make scan` runs trivy with `--severity HIGH,CRITICAL
+--ignore-unfixed --exit-code 1`, vulnerability scanner only. The CI image
+job also runs the compose stack from `.env.example` and the smoke test, and
+fails if the image grows past 30 MB. Unfixed vulnerabilities are still
+visible by running trivy without `--ignore-unfixed`; govulncheck covers the
+Go code more precisely (only vulnerable functions that are actually called).
+
+**Alternatives.** Fail on every HIGH/CRITICAL: blocks on findings that
+cannot be fixed. Report only (SARIF upload, no failure): easy to ignore.
+
+## 045. Releases: tag on main, CI first, X.Y.Z and sha tags, no latest
+
+*2026-11-05, Phase 9*
+
+**Context.** `uptime-infra` deploys exact versions. The image must be
+built from reviewed code, for both server architectures, and a version
+must always mean the same image.
+
+**Decision.** `release.yml` runs on `vX.Y.Z` tags. It calls `ci.yml`
+(`workflow_call`) on the tagged commit and refuses tags whose commit is not
+on `main`. It pushes one multi-arch image (amd64, arm64) to `ghcr.io` with
+the tags `X.Y.Z` and `sha-<12 hex>` (the commit `/version` reports), never
+`latest`, with provenance and an SBOM attached; QEMU is not needed because
+the Dockerfile cross-compiles. It then runs the published image to check its
+version and creates the GitHub Release with notes from
+`scripts/changelog.sh` (Conventional Commits grouped by type), which also
+backs `make changelog`. Tags with a suffix become pre-releases.
+
+**Alternatives.** GitHub's generated release notes: built from PR titles,
+not commits, and not available locally. `latest` for convenience: a deploy
+using it changes when someone tags, not when the deployment changes.
+Releasing from any branch: publishes unreviewed code.
