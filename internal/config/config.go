@@ -42,6 +42,11 @@ type Database struct {
 // single leaked token.
 const MinJWTSecretLen = 32
 
+// ExampleJWTSecret is the JWT_SECRET of .env.example. It lets
+// `cp .env.example .env && docker compose up` work out of the box, and is
+// public, so the API refuses it when APP_ENV=prod.
+const ExampleJWTSecret = "dev-only-insecure-jwt-secret-change-me-0123456789" //nolint:gosec // a known public value, kept here to be rejected
+
 // Auth holds authentication settings.
 type Auth struct {
 	// JWTSecret signs access tokens. Anyone who knows it can forge a token
@@ -213,6 +218,9 @@ func (a Auth) validate() error {
 
 func (c API) validate() error {
 	errs := []error{c.Common.validate(), c.DB.validate(), c.Auth.validate()}
+	if c.Env == EnvProd && c.Auth.JWTSecret == ExampleJWTSecret {
+		errs = append(errs, errors.New("JWT_SECRET is the public example value from .env.example; generate a real one for APP_ENV=prod"))
+	}
 	if c.MaxMonitorsPerUser < 1 {
 		errs = append(errs, fmt.Errorf("MAX_MONITORS_PER_USER must be at least 1, got %d", c.MaxMonitorsPerUser))
 	}

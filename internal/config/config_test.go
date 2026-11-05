@@ -2,6 +2,8 @@ package config
 
 import (
 	"log/slog"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,6 +173,11 @@ func TestLoadAPIErrors(t *testing.T) {
 			wantErr: []string{"APP_ENV", "SHUTDOWN_TIMEOUT", "HTTP_ADDR", "DB_MAX_CONNS"},
 		},
 		{
+			name:    "example secret in production",
+			environ: map[string]string{"APP_ENV": "prod", "JWT_SECRET": ExampleJWTSecret},
+			wantErr: []string{"JWT_SECRET is the public example value"},
+		},
+		{
 			name:    "database URL is required",
 			environ: map[string]string{"DATABASE_URL": unset},
 			wantErr: []string{"DATABASE_URL"},
@@ -314,4 +321,24 @@ func TestLoadWorkerErrors(t *testing.T) {
 
 	_, err = loadWorker(map[string]string{})
 	assert.ErrorContains(t, err, "DATABASE_URL")
+}
+
+// The example secret is fine for local development (dev is the default).
+func TestLoadAPIExampleSecretInDev(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := loadAPI(withRequired(map[string]string{"JWT_SECRET": ExampleJWTSecret}))
+
+	require.NoError(t, err)
+	assert.Equal(t, ExampleJWTSecret, cfg.Auth.JWTSecret)
+}
+
+// .env.example must hold exactly ExampleJWTSecret, or the production guard
+// would not recognise it.
+func TestEnvExampleUsesExampleSecret(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("../../.env.example")
+	require.NoError(t, err)
+
+	assert.Contains(t, strings.Split(string(data), "\n"), "JWT_SECRET="+ExampleJWTSecret)
 }

@@ -113,10 +113,18 @@ clean: ## Remove built binaries and coverage reports
 
 ##@ Local stack (Docker Compose)
 
-# --wait returns once the healthchecks pass, so `make up migrate-up` works.
+# Build metadata for the image; compose passes them on as build args.
+export VERSION COMMIT BUILT_AT
+
+# --wait returns once every service is healthy (migrate: exited with 0), so
+# `make up smoke` works.
 .PHONY: up
-up: ## Start PostgreSQL in the background and wait until it is healthy
-	docker compose up -d --wait
+up: ## Build the image and start the whole stack (postgres, migrate, api, worker)
+	docker compose up -d --build --wait
+
+.PHONY: db
+db: ## Start only PostgreSQL (for make run-api / run-worker on the host)
+	docker compose up -d --wait postgres
 
 .PHONY: down
 down: ## Stop the stack (the database volume is kept)
@@ -125,6 +133,15 @@ down: ## Stop the stack (the database volume is kept)
 .PHONY: logs
 logs: ## Follow logs of the stack
 	docker compose logs -f
+
+.PHONY: docker-build
+docker-build: ## Build the image uptime-monitor:<version> for this platform
+	docker build -t uptime-monitor:$(VERSION) \
+		--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg BUILT_AT=$(BUILT_AT) .
+
+.PHONY: smoke
+smoke: ## Check a running stack end to end (make up first)
+	sh scripts/smoke.sh
 
 ##@ Quality
 
